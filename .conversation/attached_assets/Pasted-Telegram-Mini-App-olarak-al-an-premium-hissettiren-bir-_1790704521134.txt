@@ -1,0 +1,104 @@
+Telegram Mini App olarak çalışan, premium hissettiren bir "10 Dakikalık Geçici E-posta" uygulaması yap. Ekli ekran görüntüleri sadece düzen referansıdır. Birebir kopyalama, çok daha rafine ve şık bir sürümünü yap.
+
+TEKNOLOJİ
+- Node.js + Express backend, tek sayfalık mobil öncelikli frontend (ağır bağımlılık yok)
+- Telegram WebApp SDK (telegram-web-app.js) ve bot için grammY (long polling, webhook değil)
+- Sunucu 0.0.0.0 üzerinde process.env.PORT portunu dinlesin
+- Secrets: BOT_TOKEN ve APP_URL (uygulamanın herkese açık HTTPS adresi)
+- Veritabanı yok, tüm oturumlar bellekte (sunucu yeniden başlarsa sıfırlanır, README'de belirt)
+- Kod düzenli klasörlerde olsun: server/, public/, locales/. README'ye kurulum ve BotFather adımlarını yaz.
+
+MAIL ALTYAPISI (ücretsiz, API anahtarı yok)
+- Ana servis mail.tm: GET https://api.mail.tm/domains, POST /accounts (rastgele adres + güçlü rastgele şifre), POST /token, GET /messages, GET /messages/{id}, DELETE /accounts/{id}
+- Yedek olarak mail.gw (api.mail.gw), endpoint yapısı aynı. Ana servis hata verirse otomatik ona geç.
+- mail.tm şifre ve token'ları sadece backend'de dursun, frontend'e asla gitmesin
+- 429 gelirse üstel geri çekilme uygula. Toplam istek hızını sınırlı tut (mail.tm saniyede yaklaşık 8 istek izin verir). Sadece aktif ve süresi dolmamış oturumlar için sorgula.
+
+ÖZELLİKLER
+1. Açılışta otomatik yeni adres oluştur, büyük göster, "Kopyala" butonu olsun
+2. 10:00'dan geriye sayan sayaç. Süre bitince mail.tm hesabını sil ve "Süre doldu" ekranını göster. Sayacın yanındaki yenile ikonu süreyi 10:00'a sıfırlasın (oturum başına en fazla 3 kez).
+3. "Yeni adres" butonu eski hesabı silip yenisini oluştursun
+4. Frontend 5 saniyede bir backend'i yoklasın, yeni mail gelince listeye eklesin
+5. Mail detayında HTML'i backend'de sanitize et (script, iframe, form, tracker, uzak resim yok). Sandbox'lı iframe (srcdoc, sandbox="") veya düz metin olarak göster. Linklere basınca Telegram.WebApp.openLink ile aç.
+6. Mailde 4 ile 8 haneli doğrulama kodu varsa algıla, mail satırında ve detayında ayrı bir kod hapı olarak göster, dokununca kopyalansın
+7. Yeni mail gelince bot kullanıcıya Telegram mesajı göndersin (gönderen, konu, altında Mini App'i açan buton). Chat id'yi initData'daki kullanıcıdan al.
+
+GÜVENLİK
+- Her API isteğinde initData'yı header ile gönder (Authorization: tma <initData>). Backend'de HMAC-SHA256 imzasını doğrula (secret key = HMAC_SHA256("WebAppData", BOT_TOKEN)), auth_date 24 saatten eskiyse reddet.
+- Oturumlar user_id'ye göre ayrılsın, kimse başkasının mailini göremesin
+- Kullanıcı başına rate limit: saatte en fazla 10 yeni adres
+- Süresi dolan hesapları her 30 saniyede bir çalışan bir temizleyici mail.tm'den de silsin
+- İçerikte CSP kullan, dış kaynaktan script yükleme
+
+DİL DESTEĞİ: TÜRKÇE, RUSÇA, İNGİLİZCE
+- Üç dil eksiksiz desteklensin: tr, ru, en. Tüm metinler locales/tr.json, ru.json, en.json dosyalarında olsun, koda gömülü metin kalmasın.
+- Varsayılan dil Telegram initData içindeki user.language_code'dan gelsin: tr için Türkçe, ru için Rusça, diğer hepsi için İngilizce
+- Header'da globe SVG ikonu + geçerli dil kodu (TR / RU / EN) olan küçük bir hap olsun. Dokununca alttan küçük bir seçim paneli açılsın: "Türkçe", "Русский", "English". Bayrak emojisi kullanma.
+- Seçilen dil kalıcı olsun (Telegram CloudStorage varsa onu, yoksa localStorage) ve backend'e de bildirilsin. Botun Telegram mesajları da kullanıcının dilinde gitsin.
+- Dil değişince sayfa yenilenmeden tüm arayüz anında değişsin
+- Tarih ve saatleri Intl.DateTimeFormat ile seçili dile göre biçimle. Çoğul ifadelerde Intl.PluralRules kullan (Rusçada 1 / 2-4 / 5+ farkı önemli, örn. "1 письмо, 2 письма, 5 писем").
+- Çeviriler doğal ve akıcı olsun, kelimesi kelimesine makine çevirisi gibi olmasın. Ana metinler:
+  - Canlı / В сети / Live
+  - GEÇİCİ E-POSTA ADRESİN / ТВОЙ ВРЕМЕННЫЙ АДРЕС / YOUR TEMPORARY ADDRESS
+  - Kopyala / Копировать / Copy
+  - Kopyalandı / Скопировано / Copied
+  - Yeni adres / Новый адрес / New address
+  - GELEN KUTUSU / ВХОДЯЩИЕ / INBOX
+  - Yenile / Обновить / Refresh
+  - Gelen kutusu boş / Входящих нет / Inbox is empty
+  - Gelen e-postalar bekleniyor / Ожидаем входящие письма / Waiting for incoming emails
+  - Süre doldu / Время истекло / Time expired
+  - Yeni adres oluştur / Создать новый адрес / Create new address
+  - Bot /start mesajı: "Tek kullanımlık e-posta adresin hazır. Başlamak için aşağıdaki butona dokun." / "Твой одноразовый адрес готов. Нажми кнопку ниже, чтобы начать." / "Your disposable email is ready. Tap the button below to get started."
+  - Bot butonu: Geçici Mail Aç / Открыть почту / Open Temp Mail
+
+BOT
+- /start komutunda kullanıcının dilinde karşılama mesajı ve Mini App'i açan bir web_app butonu göndersin
+- Uygulamanın adresini APP_URL'den alıp bot menü butonunu ayarlasın (setChatMenuButton)
+
+ARAYÜZ
+
+Genel his
+Premium, sakin, güven veren koyu tema. Şablon veya "AI üretimi" görünümü istemiyorum. Marka adı “JNT MAIL” olsun. Yazı logosunda kelimelerden biri kalın, mavi ve altı çizili olsun (referanstaki "MIN" gibi). Referanstaki logoyu veya adı kullanma.
+
+Kesin kurallar
+- Hiçbir yerde emoji kullanma: arayüzde, butonlarda, toast'larda, botun Telegram mesajlarında, bayrak olarak bile
+- Tüm ikonlar inline SVG olsun ve tek bir set gibi görünsün (Lucide tarzı, 1.75px çizgi, yuvarlak uçlar, 20px)
+- Görsel için harici resim kullanma
+
+Renk ve yüzey
+- Arka plan çok koyu lacivert-siyah (#0B0D12), üzerinde çok hafif grain dokusu
+- Kartlar bir ton açık (#12151C), 1px yarı saydam beyaz kenarlık (rgba(255,255,255,0.06)), 24px radius, yumuşak ve derin gölge
+- Tek vurgu rengi elektrik mavisi (#3B7BFF), butonlarda hafif dikey gradyan ve altında yumuşak mavi glow
+- Metin: ana #F2F4F8, ikincil #8A91A0
+- Telegram header ve arka plan rengini uygulamayla eşle (setHeaderColor / setBackgroundColor)
+
+Tipografi
+- Adres, sayaç ve başlıklarda monospace (JetBrains Mono), gövdede Inter. İkisini Google Fonts'tan yükle ve Kiril harflerini destekleyen subset'i dahil et (cyrillic, latin-ext).
+- Başlıklar büyük harf, geniş harf aralığı. Boşluklar cömert (24px iç boşluk).
+
+Ekran düzeni (yukarıdan aşağıya)
+1. Üst çubuk: solda yazı logo. Sağda dil hapı ve "Canlı" hapı (CSS ile yanıp sönen yeşil nokta, ikon değil).
+2. Adres kartı: ince kesik çizgili (dashed) kenarlık. İçinde:
+   - Küçük büyük harfli etiket
+   - Adres, yuvarlak hap alanında, monospace, uzunsa ellipsis
+   - Altında yan yana: solda süre hapı (gri, "09:46" monospace + yuvarlak yenile ikonu), sağda büyük mavi "Kopyala" butonu (kopya SVG ikonu + yazı)
+   - Kartın altında ikincil, çerçevesiz "Yeni adres" butonu (artı SVG ikonu)
+3. Gelen kutusu kartı: koyu başlık şeridi (başlık + okunmamış sayı rozeti), sağda "Yenile" hapı (SVG ikonlu). Altında açık renkli gövde.
+4. Boş durum: ortada zarf SVG'si, etrafında yavaşça dönen çember ve oklar, altında iki satır metin
+5. Mail satırı: solda gönderenin baş harfli yuvarlak avatarı (rengi isimden türetilsin), ortada gönderen (kalın) ve konu (tek satır, silik), sağda saat. Okunmamışsa mavi nokta.
+6. Mail detayı: alttan kayarak açılan tam ekran panel, geri için Telegram BackButton kullan
+7. Süre bitti durumu: adres kartı grileşsin, "Süre doldu" yazsın, tek büyük "Yeni adres oluştur" butonu kalsın
+
+Hareket ve hissiyat
+- Sayaç son 2 dakikada amber, son 30 saniyede kırmızı olsun
+- "Kopyala"ya basınca buton kısa süre onay SVG'sine ve "Kopyalandı"ya dönsün, Telegram HapticFeedback ver
+- Yeni mail gelince öğe yukarıdan kayarak girsin, hafif mavi parlama bırakıp sönsün
+- Butonlara basınca hafif küçülme (scale 0.97), tüm geçişler 150-250ms ease-out
+- Yüklerken skeleton göster, dönen spinner kullanma
+- Telegram safe-area boşluklarına uy, WebApp.expand() çağır, dokunma alanları en az 48px
+- Rusça ve Türkçe metinler İngilizceden uzun olabilir, hiçbir buton veya hap taşmasın veya bozulmasın
+- Sıradan şablon kartlar, düz köşeli butonlar ve varsayılan sistem yazı tipi kullanma
+
+Referansta olup istemediklerim
+"Temp Number" butonu, uygulama indirme bannerı, alttaki makale ve SEO metin bölümleri.
