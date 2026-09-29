@@ -21,3 +21,8 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.production]
+APP_URL = "https://jnt-mail-telegram-mini-app--azerjntjnt.replit.app"

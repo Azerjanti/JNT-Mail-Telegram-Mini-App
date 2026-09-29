@@ -73,12 +73,13 @@ const providers: Array<{ provider: Provider; apiBase: string }> = [
   { provider: "mail.gw", apiBase: "https://api.mail.gw" },
 ];
 
-const bot = process.env.BOT_TOKEN ? new Bot(process.env.BOT_TOKEN) : null;
-const appUrl =
-  process.env.APP_URL ??
-  (process.env.REPLIT_DEV_DOMAIN
-    ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-    : "https://jnt-mail.replit.app");
+// Long polling must run in exactly one production process. Keeping it off in
+// the development workflow prevents Telegram's 409 getUpdates conflict when a
+// published deployment is using the same bot token.
+const bot = process.env.BOT_TOKEN && process.env.NODE_ENV === "production"
+  ? new Bot(process.env.BOT_TOKEN)
+  : null;
+const appUrl = process.env.APP_URL ?? "";
 
 const copy: Record<Language, { welcome: string; button: string; newMail: string }> = {
   tr: {
@@ -468,14 +469,20 @@ if (bot) {
   bot.command("start", async (ctx) => {
     const language = safeLanguage(ctx.from?.language_code);
     await ctx.reply(copy[language].welcome, {
-      reply_markup: new InlineKeyboard().webApp(copy[language].button, appUrl),
+      ...(appUrl ? { reply_markup: new InlineKeyboard().webApp(copy[language].button, appUrl) } : {}),
     });
   });
-  void bot.api.setChatMenuButton({ menu_button: { type: "web_app", text: "JNT Mail", web_app: { url: appUrl } } }).catch((caught) => {
-    logger.warn({ err: caught }, "Could not set Telegram menu button");
-  });
+  if (appUrl) {
+    void bot.api.setChatMenuButton({ menu_button: { type: "web_app", text: "JNT Mail", web_app: { url: appUrl } } }).catch((caught) => {
+      logger.warn({ err: caught }, "Could not set Telegram menu button");
+    });
+  } else {
+    logger.warn("APP_URL is missing; Telegram web app buttons were not configured");
+  }
   bot.catch((caught) => logger.warn({ err: caught }, "Telegram bot error"));
-  void bot.start({ drop_pending_updates: true });
+  void bot.start({ drop_pending_updates: true }).catch((caught) => {
+    logger.error({ err: caught }, "Telegram long polling stopped");
+  });
 }
 
 export default router;
