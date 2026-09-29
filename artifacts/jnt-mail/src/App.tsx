@@ -1,0 +1,649 @@
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  Clipboard,
+  Clock3,
+  Globe2,
+  Inbox,
+  Loader2,
+  Mail,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  X,
+} from 'lucide-react';
+import {
+  getGetMailInboxQueryKey,
+  getGetMailMessageQueryKey,
+  getGetMailSessionQueryKey,
+  useCreateMailSession,
+  useGetMailInbox,
+  useGetMailMessage,
+  useGetMailSession,
+  useRefreshMailSession,
+  useUpdateMailLanguage,
+  type MailMessage,
+  type MailSession,
+} from '@workspace/api-client-react';
+import { ErrorBoundary } from '@/components/error-boundary';
+import { Toaster } from '@/components/ui/toaster';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { copy, localeLabels, type Copy, type Locale } from '@/lib/locales';
+import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
+import NotFound from '@/pages/not-found';
+
+const queryClient = new QueryClient();
+
+function IconMark() {
+  return (
+    <span className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-primary text-primary-foreground shadow-[0_0_28px_hsl(211_100%_62%/.2)]" aria-hidden="true">
+      <Mail className="h-[17px] w-[17px]" strokeWidth={2.2} />
+    </span>
+  );
+}
+
+function Button({
+  children,
+  className = '',
+  variant = 'secondary',
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+}) {
+  const variants = {
+    primary: 'bg-primary text-primary-foreground hover:brightness-110 shadow-[0_8px_24px_hsl(211_100%_62%/.15)]',
+    secondary: 'border border-border bg-secondary text-secondary-foreground hover:bg-[hsl(223_30%_18%)]',
+    ghost: 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+    danger: 'border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15',
+  };
+  return (
+    <button
+      {...props}
+      className={`inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-[13px] font-medium transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-45 ${variants[variant]} ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Skeleton({ className = '' }: { className?: string }) {
+  return <div className={`animate-pulse-soft rounded bg-secondary ${className}`} />;
+}
+
+function formatCountdown(expiresAt?: string, now = Date.now()) {
+  if (!expiresAt) return { label: '10:00', expired: false, urgent: false, seconds: 600 };
+  const seconds = Math.max(0, Math.floor((new Date(expiresAt).getTime() - now) / 1000));
+  return {
+    label: `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`,
+    expired: seconds === 0,
+    urgent: seconds > 0 && seconds <= 120,
+    seconds,
+  };
+}
+
+function useCountdown(expiresAt?: string) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return formatCountdown(expiresAt, now);
+}
+
+function formatReceived(date: string, locale: Locale, c: Copy) {
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return date;
+  const seconds = Math.round((Date.now() - parsed.getTime()) / 1000);
+  if (seconds < 60) return c.justNow;
+  return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(parsed);
+}
+
+type TelegramWebApp = {
+  version?: string;
+  isVersionAtLeast?: (version: string) => boolean;
+  initData?: string;
+  initDataUnsafe?: { user?: { language_code?: string } };
+  ready?: () => void;
+  expand?: () => void;
+  setHeaderColor?: (color: string) => void;
+  setBackgroundColor?: (color: string) => void;
+  openLink?: (url: string) => void;
+  HapticFeedback?: { impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void; notificationOccurred?: (type: 'error' | 'success' | 'warning') => void };
+  BackButton?: { show?: () => void; hide?: () => void; onClick?: (callback: () => void) => void; offClick?: (callback: () => void) => void };
+  CloudStorage?: {
+    getItem?: (key: string, callback?: (error: Error | null, value: string) => void) => void;
+    setItem?: (key: string, value: string, callback?: (error: Error | null, stored: boolean) => void) => void;
+  };
+};
+
+function getTelegramWebApp(): TelegramWebApp | undefined {
+  return (window as Window & { Telegram?: { WebApp?: TelegramWebApp } }).Telegram?.WebApp;
+}
+
+function getTelegramAuthorization() {
+  const initData = getTelegramWebApp()?.initData;
+  return `tma ${initData || 'preview'}`;
+}
+
+function supportsCloudStorage(telegram: TelegramWebApp | undefined) {
+  return Boolean(telegram?.CloudStorage && (telegram.isVersionAtLeast?.('6.9') ?? false));
+}
+
+function getInitialLocale(): Locale {
+  const stored = window.localStorage.getItem('jnt-mail-language');
+  if (stored === 'tr' || stored === 'ru' || stored === 'en') return stored;
+  const language = getTelegramWebApp()?.initDataUnsafe?.user?.language_code;
+  return language === 'tr' ? 'tr' : language === 'ru' ? 'ru' : 'en';
+}
+
+function telegramHaptic(kind: 'success' | 'error' | 'light' = 'light') {
+  const haptic = getTelegramWebApp()?.HapticFeedback;
+  if (kind === 'light') haptic?.impactOccurred?.('light');
+  else haptic?.notificationOccurred?.(kind);
+}
+
+function AppError({ onRetry, c }: { onRetry: () => void; c: Copy }) {
+  return (
+    <div className="mx-auto flex min-h-[65vh] max-w-md flex-col items-center justify-center px-6 text-center animate-slide-up">
+      <span className="mb-5 flex h-12 w-12 items-center justify-center rounded-full border border-destructive/30 bg-destructive/10 text-destructive">
+        <AlertTriangle className="h-5 w-5" />
+      </span>
+      <h2 className="font-mono text-base font-medium text-foreground">{c.errorTitle}</h2>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">{c.errorDetail}</p>
+      <Button variant="secondary" className="mt-6" onClick={onRetry} data-testid="button-retry-inbox">
+        <RefreshCw className="h-4 w-4" /> {c.retry}
+      </Button>
+    </div>
+  );
+}
+
+function LoadingView({ c }: { c: Copy }) {
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 pb-12 pt-8 sm:px-6 sm:pt-12" data-testid="state-loading">
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+        {c.loading}
+      </div>
+      <Skeleton className="mt-5 h-[142px] w-full rounded-2xl" />
+      <div className="mt-8 flex items-center justify-between">
+        <Skeleton className="h-7 w-28" />
+        <Skeleton className="h-8 w-20" />
+      </div>
+      <div className="mt-4 space-y-2">
+        <Skeleton className="h-[78px] w-full rounded-xl" />
+        <Skeleton className="h-[78px] w-full rounded-xl" />
+        <Skeleton className="h-[78px] w-full rounded-xl" />
+      </div>
+    </div>
+  );
+}
+
+function LanguageSheet({
+  locale,
+  onSelect,
+  onClose,
+  pending,
+  c,
+}: {
+  locale: Locale;
+  onSelect: (locale: Locale) => void;
+  onClose: () => void;
+  pending: boolean;
+  c: Copy;
+}) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-5" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="w-full max-w-md rounded-t-2xl border border-border bg-popover p-5 shadow-2xl sm:rounded-2xl animate-slide-up" role="dialog" aria-modal="true" aria-labelledby="language-title">
+        <div className="mb-5 flex items-start justify-between">
+          <div>
+            <h2 id="language-title" className="font-mono text-sm font-medium text-foreground">{c.languageTitle}</h2>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{c.languageDetail}</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground" data-testid="button-close-language">
+            <X className="h-4 w-4" />
+            <span className="sr-only">{c.close}</span>
+          </button>
+        </div>
+        <div className="space-y-2">
+          {(Object.keys(localeLabels) as Locale[]).map((item) => (
+            <button
+              type="button"
+              key={item}
+              onClick={() => onSelect(item)}
+              disabled={pending}
+              className={`flex w-full items-center justify-between rounded-xl border px-4 py-3.5 text-left transition-colors ${locale === item ? 'border-primary/70 bg-primary/10' : 'border-border bg-secondary/40 hover:bg-secondary'}`}
+              data-testid={`button-language-${item}`}
+            >
+              <span>
+                <span className="block text-sm font-medium text-foreground">{localeLabels[item]}</span>
+                <span className="mt-0.5 block font-mono text-[10px] uppercase tracking-[.18em] text-muted-foreground">{item}</span>
+              </span>
+              {locale === item ? <Check className="h-4 w-4 text-primary" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ToastMessage({ text, error = false }: { text: string; error?: boolean }) {
+  return (
+    <div className={`fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border px-3.5 py-2.5 text-xs shadow-2xl animate-slide-up ${error ? 'border-destructive/30 bg-[hsl(0_28%_14%)] text-destructive' : 'border-primary/30 bg-[hsl(211_35%_13%)] text-foreground'}`} role="status" data-testid="toast-message">
+      {error ? <AlertTriangle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5 text-primary" />}
+      {text}
+    </div>
+  );
+}
+
+function RefreshDialog({
+  onConfirm,
+  onClose,
+  pending,
+  c,
+}: {
+  onConfirm: () => void;
+  onClose: () => void;
+  pending: boolean;
+  c: Copy;
+}) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/65 p-5" role="presentation">
+      <section className="w-full max-w-sm rounded-2xl border border-border bg-popover p-5 shadow-2xl animate-slide-up" role="dialog" aria-modal="true" aria-labelledby="refresh-title">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary"><RefreshCw className="h-5 w-5" /></div>
+        <h2 id="refresh-title" className="mt-5 font-mono text-sm font-medium">{c.refreshAddress}</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{c.refreshDetail}</p>
+        <div className="mt-6 grid grid-cols-2 gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={pending} data-testid="button-cancel-refresh">{c.cancel}</Button>
+          <Button variant="primary" onClick={onConfirm} disabled={pending} data-testid="button-confirm-refresh">
+            {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {pending ? c.refreshing : c.confirmRefresh}
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MessageDetail({
+  messageId,
+  locale,
+  c,
+  onBack,
+}: {
+  messageId: string;
+  locale: Locale;
+  c: Copy;
+  onBack: () => void;
+}) {
+  const query = useGetMailMessage(messageId, {
+    query: { enabled: Boolean(messageId), queryKey: getGetMailMessageQueryKey(messageId) },
+    request: { credentials: 'include', headers: { Authorization: getTelegramAuthorization() } },
+  });
+  const message = query.data;
+  useEffect(() => {
+    const telegram = getTelegramWebApp();
+    const goBack = () => onBack();
+    telegram?.BackButton?.show?.();
+    telegram?.BackButton?.onClick?.(goBack);
+    return () => {
+      telegram?.BackButton?.offClick?.(goBack);
+      telegram?.BackButton?.hide?.();
+    };
+  }, [onBack]);
+  return (
+    <div className="fixed inset-0 z-20 overflow-y-auto bg-background" data-testid="panel-message-detail">
+      <div className="mx-auto min-h-full w-full max-w-3xl px-4 pb-12 sm:px-6">
+        <header className="sticky top-0 z-10 -mx-4 flex items-center justify-between border-b border-border bg-background/90 px-4 py-4 backdrop-blur sm:-mx-6 sm:px-6">
+          <button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground" data-testid="button-back-inbox">
+            <ArrowLeft className="h-4 w-4" /> {c.back}
+          </button>
+          <span className="font-mono text-[10px] uppercase tracking-[.2em] text-muted-foreground">{c.inbox}</span>
+        </header>
+        {query.isLoading ? (
+          <div className="pt-10" data-testid="state-message-loading"><Skeleton className="h-8 w-4/5" /><Skeleton className="mt-4 h-4 w-2/5" /><Skeleton className="mt-10 h-40 w-full rounded-xl" /></div>
+        ) : query.isError || !message ? (
+          <AppError c={c} onRetry={() => void query.refetch()} />
+        ) : (
+          <article className="animate-slide-up pt-8" data-testid={`article-message-${message.id}`}>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[.2em] text-primary">{c.sender}</p>
+                <h1 className="mt-3 max-w-2xl font-mono text-xl font-medium leading-8 text-foreground sm:text-2xl">{message.subject || c.subjectFallback}</h1>
+              </div>
+              <time className="font-mono text-[11px] text-muted-foreground" dateTime={message.receivedAt}>{formatReceived(message.receivedAt, locale, c)}</time>
+            </div>
+            <div className="mt-7 flex items-center gap-3 border-y border-border py-4">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 font-mono text-xs text-primary">{message.sender.slice(0, 1).toUpperCase()}</span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">{message.sender}</p>
+                {message.senderEmail ? <p className="truncate font-mono text-[11px] text-muted-foreground">{message.senderEmail}</p> : null}
+              </div>
+            </div>
+            {message.verificationCode ? (
+              <div className="mt-7 rounded-xl border border-primary/25 bg-primary/10 p-4">
+                <p className="font-mono text-[10px] uppercase tracking-[.18em] text-primary">{c.verification}</p>
+                <p className="mt-2 font-mono text-2xl tracking-[.22em] text-foreground" data-testid="text-verification-code">{message.verificationCode}</p>
+              </div>
+            ) : null}
+            <div
+              className="prose prose-invert mt-8 max-w-none text-sm leading-7 text-secondary-foreground"
+              data-testid="content-message"
+              onClick={(event) => {
+                const anchor = (event.target as HTMLElement).closest('a');
+                const href = anchor?.getAttribute('href');
+                if (href) {
+                  event.preventDefault();
+                  getTelegramWebApp()?.openLink?.(href) ?? window.open(href, '_blank', 'noopener,noreferrer');
+                }
+              }}
+            >
+              {message.html ? <div dangerouslySetInnerHTML={{ __html: message.html }} /> : <p className="whitespace-pre-wrap">{message.text || c.emptyText}</p>}
+            </div>
+          </article>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddressHeader({
+  session,
+  countdown,
+  c,
+  onCopy,
+  onRefresh,
+  onNewAddress,
+  onLanguage,
+  copyState,
+}: {
+  session: MailSession;
+  countdown: ReturnType<typeof formatCountdown>;
+  c: Copy;
+  onCopy: () => void;
+  onRefresh: () => void;
+  onNewAddress: () => void;
+  onLanguage: () => void;
+  copyState: boolean;
+}) {
+  const canRefresh = session.refreshesUsed < session.refreshesLimit;
+  return (
+    <>
+      <section className={`relative overflow-hidden rounded-2xl border p-5 sm:p-6 ${countdown.urgent ? 'border-amber-400/40 bg-[hsl(35_22%_12%)]' : 'border-border bg-card'}`} data-testid="card-mail-session">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-primary/10 blur-3xl" />
+        <div className="relative">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-[.2em] text-muted-foreground">{c.inbox}</p>
+              <div className="mt-3 flex max-w-full items-center gap-2">
+                <code className="break-all font-mono text-base font-medium text-foreground sm:text-lg" data-testid="text-mail-address">{session.address}</code>
+                <button type="button" onClick={onCopy} className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-primary" aria-label={c.copy} data-testid="button-copy-address">
+                  {copyState ? <Check className="h-4 w-4 text-primary" /> : <Clipboard className="h-4 w-4" />}
+                </button>
+              </div>
+              {copyState ? <p className="mt-2 text-[11px] text-primary" data-testid="text-copy-feedback">{c.copied}</p> : null}
+            </div>
+            <div className={`shrink-0 text-right ${countdown.urgent ? 'text-amber-300' : 'text-primary'}`}>
+              <div className="flex items-center justify-end gap-1.5"><Clock3 className="h-3.5 w-3.5" /><span className="font-mono text-[10px] uppercase tracking-[.14em]">{c.expiresIn}</span></div>
+              <p className="mt-1 font-mono text-2xl font-medium tabular-nums" data-testid="text-countdown">{countdown.expired ? '--:--' : countdown.label}</p>
+            </div>
+          </div>
+          {countdown.urgent && !countdown.expired ? <div className="mt-5 flex items-center gap-2 border-t border-amber-400/20 pt-4 text-xs text-amber-200" data-testid="status-countdown-warning"><AlertTriangle className="h-4 w-4" /> {c.expiresSoon}</div> : null}
+          {countdown.expired ? <div className="mt-5 flex items-center justify-between gap-3 border-t border-destructive/20 pt-4"><span className="flex items-center gap-2 text-xs text-destructive"><AlertTriangle className="h-4 w-4" /> {c.expired}</span><Button variant="danger" onClick={onNewAddress} data-testid="button-refresh-expired"><Plus className="h-4 w-4" /> {c.create}</Button></div> : null}
+        </div>
+      </section>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <button type="button" onClick={onLanguage} className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground" data-testid="button-open-language">
+          <Globe2 className="h-3.5 w-3.5" /> {localeLabels[session.language]}
+        </button>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] text-muted-foreground">{session.refreshesUsed}/{session.refreshesLimit} {c.refreshes}</span>
+          {!countdown.expired ? <Button variant="ghost" className="px-2 py-1.5 text-xs" onClick={onRefresh} disabled={!canRefresh} data-testid="button-refresh-address"><RefreshCw className="h-3.5 w-3.5" /> {c.refresh}</Button> : null}
+        </div>
+      </div>
+      <button type="button" onClick={onNewAddress} className="mt-2 inline-flex min-h-12 items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground" data-testid="button-new-address">
+        <Plus className="h-4 w-4" /> {c.create}
+      </button>
+    </>
+  );
+}
+
+function InboxList({
+  messages,
+  locale,
+  c,
+  onOpen,
+  isFetching,
+}: {
+  messages: MailMessage[];
+  locale: Locale;
+  c: Copy;
+  onOpen: (id: string) => void;
+  isFetching: boolean;
+}) {
+  return (
+    <section className="mt-9" data-testid="section-message-list">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="font-mono text-xs uppercase tracking-[.18em] text-muted-foreground">{c.inbox}</h2>
+          {isFetching ? <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" /> : null}
+      </div>
+      {messages.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border bg-card/50 px-6 py-14 text-center" data-testid="state-empty-inbox">
+          <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full border border-border bg-secondary text-muted-foreground"><Inbox className="h-5 w-5" /></span>
+          <h3 className="mt-5 font-mono text-sm text-foreground">{c.noMessages}</h3>
+          <p className="mx-auto mt-2 max-w-xs text-xs leading-5 text-muted-foreground">{c.noMessagesDetail}</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {messages.map((message, index) => (
+            <button type="button" key={message.id} onClick={() => onOpen(message.id)} className={`group flex w-full items-start gap-3 rounded-xl border px-4 py-4 text-left transition-all hover:border-primary/40 hover:bg-card ${message.isRead ? 'border-border bg-card/50' : 'border-primary/20 bg-card'}`} data-testid={`row-message-${message.id}`}>
+              <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg font-mono text-[11px] ${message.isRead ? 'bg-secondary text-muted-foreground' : 'bg-primary/15 text-primary'}`}>{message.sender.slice(0, 1).toUpperCase()}</span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center justify-between gap-3">
+                  <span className={`truncate text-sm ${message.isRead ? 'font-medium text-secondary-foreground' : 'font-semibold text-foreground'}`}>{message.sender}</span>
+                  <time className="shrink-0 font-mono text-[10px] text-muted-foreground" dateTime={message.receivedAt}>{formatReceived(message.receivedAt, locale, c)}</time>
+                </span>
+                <span className="mt-1 block truncate text-xs font-medium text-foreground">{message.subject || c.subjectFallback}</span>
+                <span className="mt-1 block truncate text-xs text-muted-foreground">{message.preview || message.text || c.emptyText}</span>
+              </span>
+              <ChevronRight className="mt-2 h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Home() {
+  const queryClient = useQueryClient();
+  const requestOptions = { credentials: 'include' as const, headers: { Authorization: getTelegramAuthorization() } };
+  const sessionQuery = useGetMailSession({ request: requestOptions });
+  const session = sessionQuery.data;
+  const [locale, setLocale] = useState<Locale>(() => getInitialLocale());
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [languageOpen, setLanguageOpen] = useState(false);
+  const [refreshOpen, setRefreshOpen] = useState(false);
+  const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+  const createSession = useCreateMailSession({ request: requestOptions });
+  const refreshSession = useRefreshMailSession({ request: requestOptions });
+  const updateLanguage = useUpdateMailLanguage({ request: requestOptions });
+  const inboxQuery = useGetMailInbox({
+    query: {
+      enabled: Boolean(session),
+      queryKey: getGetMailInboxQueryKey(),
+      refetchInterval: 5000,
+      refetchOnWindowFocus: true,
+    },
+    request: requestOptions,
+  });
+  const c = copy[locale];
+  const countdown = useCountdown(session?.expiresAt);
+
+  useEffect(() => {
+    if (session?.language) setLocale(session.language);
+  }, [session?.language]);
+
+  useEffect(() => {
+    const telegram = getTelegramWebApp();
+    if (supportsCloudStorage(telegram)) {
+      telegram?.CloudStorage?.getItem?.('jnt-mail-language', (_error, value) => {
+        if (value === 'tr' || value === 'ru' || value === 'en') setLocale(value);
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    const telegram = getTelegramWebApp();
+    telegram?.ready?.();
+    telegram?.expand?.();
+    telegram?.setHeaderColor?.('#0B0D12');
+    telegram?.setBackgroundColor?.('#0B0D12');
+  }, []);
+
+  useEffect(() => () => {
+    if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+  }, []);
+
+  const messages = useMemo(() => inboxQuery.data?.messages ?? [], [inboxQuery.data?.messages]);
+  const unreadCount = inboxQuery.data?.unreadCount ?? messages.filter((message) => !message.isRead).length;
+
+  function showToast(text: string, error = false) {
+    setToast({ text, error });
+    window.setTimeout(() => setToast(null), 3000);
+  }
+
+  function copyAddress() {
+    if (!session) return;
+    if (!navigator.clipboard) {
+      showToast(c.copyError, true);
+      return;
+    }
+    void navigator.clipboard.writeText(session.address).then(() => {
+      telegramHaptic('success');
+      setCopied(true);
+      if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 2200);
+    }).catch(() => showToast(c.copyError, true));
+  }
+
+  function createAddress() {
+    telegramHaptic('light');
+    createSession.mutate(undefined, {
+      onSuccess: (newSession) => {
+        setLocale(newSession.language);
+        queryClient.setQueryData(getGetMailSessionQueryKey(), newSession);
+        queryClient.setQueryData(getGetMailInboxQueryKey(), { messages: [], unreadCount: 0, checkedAt: new Date().toISOString() });
+      },
+      onError: () => showToast(c.sessionError, true),
+    });
+  }
+
+  function refreshAddress() {
+    telegramHaptic('light');
+    refreshSession.mutate(undefined, {
+      onSuccess: (newSession) => {
+        setRefreshOpen(false);
+        queryClient.setQueryData(getGetMailSessionQueryKey(), newSession);
+        queryClient.setQueryData(getGetMailInboxQueryKey(), { messages: [], unreadCount: 0, checkedAt: new Date().toISOString() });
+        showToast(c.newAddress);
+      },
+      onError: () => showToast(c.sessionError, true),
+    });
+  }
+
+  function selectLanguage(nextLocale: Locale) {
+    setLocale(nextLocale);
+    window.localStorage.setItem('jnt-mail-language', nextLocale);
+    const telegram = getTelegramWebApp();
+    if (supportsCloudStorage(telegram)) telegram?.CloudStorage?.setItem?.('jnt-mail-language', nextLocale);
+    updateLanguage.mutate({ data: { language: nextLocale } }, {
+      onSuccess: (updatedSession) => {
+        queryClient.setQueryData(getGetMailSessionQueryKey(), updatedSession);
+        setLanguageOpen(false);
+      },
+      onError: () => showToast(c.sessionError, true),
+    });
+  }
+
+  const noSession = !session && !sessionQuery.isLoading && !sessionQuery.isError;
+  return (
+    <div className="relative min-h-[100dvh] overflow-hidden bg-background">
+      <div className="app-grid pointer-events-none absolute inset-x-0 top-0 h-[520px] opacity-50" />
+      <header className="relative border-b border-border/80">
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 py-4 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <div>
+              <p className="brand-lockup font-mono text-base font-semibold tracking-[.1em] text-foreground"><span>JNT</span> <span className="text-primary underline decoration-primary/60 underline-offset-4">MAIL</span></p>
+              <p className="hidden font-mono text-[9px] uppercase tracking-[.14em] text-muted-foreground sm:block">{copy[locale].privateUtility}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/5 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[.1em] text-emerald-300"><span className="live-dot" /> {copy[locale].live}</span>
+            <button type="button" onClick={() => setLanguageOpen(true)} className="flex items-center gap-2 rounded-lg border border-border bg-secondary/50 px-3 py-2 font-mono text-[10px] uppercase tracking-[.1em] text-muted-foreground transition-colors hover:text-foreground" data-testid="button-header-language">
+              <Globe2 className="h-3.5 w-3.5" /> {locale.toUpperCase()}
+            </button>
+          </div>
+        </div>
+      </header>
+      <main className="relative mx-auto w-full max-w-3xl px-4 pb-16 sm:px-6">
+        {sessionQuery.isLoading ? <LoadingView c={c} /> : sessionQuery.isError ? <AppError c={c} onRetry={() => void sessionQuery.refetch()} /> : noSession ? (
+          <div className="mx-auto flex min-h-[72vh] max-w-md flex-col items-center justify-center text-center animate-slide-up">
+            <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10 text-primary"><ShieldCheck className="h-6 w-6" /></span>
+            <h1 className="mt-7 font-mono text-xl font-medium text-foreground">{c.loading}</h1>
+            <p className="mt-3 max-w-xs text-sm leading-6 text-muted-foreground">{c.noMessagesDetail}</p>
+            <Button variant="primary" className="mt-7" onClick={createAddress} disabled={createSession.isPending} data-testid="button-create-address">
+              {createSession.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {createSession.isPending ? c.newAddress : c.create}
+            </Button>
+          </div>
+        ) : session ? (
+          <div className="pt-7 sm:pt-10">
+             <AddressHeader session={session} countdown={countdown} c={c} onCopy={copyAddress} onRefresh={() => setRefreshOpen(true)} onNewAddress={createAddress} onLanguage={() => setLanguageOpen(true)} copyState={copied} />
+            {inboxQuery.isError ? <AppError c={c} onRetry={() => void inboxQuery.refetch()} /> : <InboxList messages={messages} locale={locale} c={c} onOpen={setSelectedMessageId} isFetching={inboxQuery.isFetching} />}
+            <div className="mt-8 flex items-center justify-between border-t border-border pt-4 text-[10px] text-muted-foreground">
+              <span>{unreadCount} {c.unread}</span>
+              <span className="font-mono">{inboxQuery.data?.checkedAt ? `${c.checked} ${formatReceived(inboxQuery.data.checkedAt, locale, c)}` : c.checking}</span>
+            </div>
+          </div>
+        ) : null}
+      </main>
+      {selectedMessageId ? <MessageDetail messageId={selectedMessageId} locale={locale} c={c} onBack={() => { setSelectedMessageId(null); void queryClient.invalidateQueries({ queryKey: getGetMailMessageQueryKey(selectedMessageId) }); }} /> : null}
+      {languageOpen ? <LanguageSheet locale={locale} onSelect={selectLanguage} onClose={() => setLanguageOpen(false)} pending={updateLanguage.isPending} c={c} /> : null}
+      {refreshOpen ? <RefreshDialog onConfirm={refreshAddress} onClose={() => setRefreshOpen(false)} pending={refreshSession.isPending} c={c} /> : null}
+      {toast ? <ToastMessage text={toast.text} error={toast.error} /> : null}
+    </div>
+  );
+}
+
+function Router() {
+  return (
+    <ErrorBoundary>
+      <Switch>
+        <Route path="/" component={Home} />
+        <Route component={NotFound} />
+      </Switch>
+    </ErrorBoundary>
+  );
+}
+
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+          <Router />
+        </WouterRouter>
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+}
+
+export default App;

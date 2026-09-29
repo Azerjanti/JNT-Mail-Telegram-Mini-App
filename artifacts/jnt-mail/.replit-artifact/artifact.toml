@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "JNT Mail"
+description = "A premium Telegram Mini App for disposable ten-minute email addresses, multilingual inboxes, secure mail previews, and timely Telegram notifications."
+version = "1.0.0"
+id = "artifacts/jnt-mail"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19844
+
+[services.development]
+run = "pnpm --filter @workspace/jnt-mail run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/jnt-mail", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/jnt-mail/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19844"
+BASE_PATH = "/"

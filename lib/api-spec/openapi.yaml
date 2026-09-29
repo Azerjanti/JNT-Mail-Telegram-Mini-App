@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: mail
+    description: Disposable mail session operations
 paths:
   /healthz:
     get:
@@ -24,7 +26,155 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /mail/session:
+    get:
+      operationId: getMailSession
+      tags: [mail]
+      summary: Get the current disposable mail session
+      parameters:
+        - $ref: "#/components/parameters/TelegramInitData"
+      responses:
+        "200":
+          description: Current session, creating one when needed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createMailSession
+      tags: [mail]
+      summary: Create a new disposable mail session
+      parameters:
+        - $ref: "#/components/parameters/TelegramInitData"
+      responses:
+        "201":
+          description: New session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /mail/session/refresh:
+    post:
+      operationId: refreshMailSession
+      tags: [mail]
+      summary: Extend the current session
+      parameters:
+        - $ref: "#/components/parameters/TelegramInitData"
+      responses:
+        "200":
+          description: Extended session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Refresh limit reached or session expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /mail/session/language:
+    post:
+      operationId: updateMailLanguage
+      tags: [mail]
+      summary: Store the user's selected language
+      parameters:
+        - $ref: "#/components/parameters/TelegramInitData"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LanguageInput"
+      responses:
+        "200":
+          description: Updated language and current session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /mail/inbox:
+    get:
+      operationId: getMailInbox
+      tags: [mail]
+      summary: List messages for the current disposable address
+      parameters:
+        - $ref: "#/components/parameters/TelegramInitData"
+      responses:
+        "200":
+          description: Inbox snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /mail/messages/{messageId}:
+    get:
+      operationId: getMailMessage
+      tags: [mail]
+      summary: Get a single sanitized mail message
+      parameters:
+        - $ref: "#/components/parameters/TelegramInitData"
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Mail message detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailMessage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
+  parameters:
+    TelegramInitData:
+      name: Authorization
+      in: header
+      required: true
+      description: "Telegram Mini App initData sent as Authorization: tma <initData>"
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    Unauthorized:
+      description: Telegram initData is missing or invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Too many new addresses
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +183,86 @@ components:
           type: string
       required:
         - status
+    MailSession:
+      type: object
+      required:
+        - address
+        - expiresAt
+        - refreshesUsed
+        - refreshesLimit
+        - language
+      properties:
+        address:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        refreshesUsed:
+          type: integer
+        refreshesLimit:
+          type: integer
+        language:
+          type: string
+          enum: [tr, ru, en]
+    InboxResponse:
+      type: object
+      required:
+        - messages
+        - unreadCount
+        - checkedAt
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/MailMessage"
+        unreadCount:
+          type: integer
+        checkedAt:
+          type: string
+          format: date-time
+    MailMessage:
+      type: object
+      required:
+        - id
+        - sender
+        - subject
+        - receivedAt
+        - isRead
+      properties:
+        id:
+          type: string
+        sender:
+          type: string
+        senderEmail:
+          type: string
+        subject:
+          type: string
+        preview:
+          type: string
+        receivedAt:
+          type: string
+          format: date-time
+        isRead:
+          type: boolean
+        verificationCode:
+          type: ["string", "null"]
+        html:
+          type: ["string", "null"]
+        text:
+          type: ["string", "null"]
+    LanguageInput:
+      type: object
+      required:
+        - language
+      properties:
+        language:
+          type: string
+          enum: [tr, ru, en]
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
 

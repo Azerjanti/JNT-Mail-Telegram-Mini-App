@@ -1,15 +1,18 @@
-# [Project name]
+# JNT Mail
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+JNT Mail is a Telegram Mini App that creates a private, disposable ten-minute email inbox.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server
+- `pnpm --filter @workspace/jnt-mail run dev` — run the mobile-first Telegram Mini App
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required env: `BOT_TOKEN` — Telegram BotFather token
+- Optional env: `APP_URL` — public HTTPS Mini App URL used by bot buttons/menu; development falls back to the Replit domain
+- No database is used. Mail accounts and sessions are in memory and reset when the server restarts.
 
 ## Stack
 
@@ -19,26 +22,36 @@ _Replace the heading above with the project's name, and this line with one sente
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
+- Mail providers: mail.tm primary, mail.gw fallback
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/jnt-mail/src/App.tsx` — frontend shell and interaction states
+- `artifacts/jnt-mail/src/index.css` — JNT Mail visual tokens and responsive styling
+- `artifacts/jnt-mail/src/lib/locales.ts` — Turkish, Russian, and English interface copy
+- `artifacts/api-server/src/routes/mail.ts` — Telegram validation, provider lifecycle, inbox polling, sanitization, and bot notifications
+- `lib/api-spec/openapi.yaml` — source of truth for mail API routes and generated hooks
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Mail provider credentials and tokens stay server-side; the client receives only the public session and sanitized message data.
+- Development previews accept a stable preview user when Telegram initData is unavailable; production requires a valid Telegram HMAC signature.
+- Expired provider accounts are deleted both on session replacement and via the 30-second cleanup loop.
+- The frontend polls inboxes every five seconds, while the backend suppresses provider calls more frequently than its safety window.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Users receive a new disposable address automatically, can copy or replace it, renew the ten-minute window up to three times, watch their inbox update, open sanitized messages, copy detected verification codes, and switch languages without reloading.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Never add emojis to the interface, toast messages, or bot notifications.
+- Keep the visual language premium, calm, dark, and mobile-first with inline SVG/Lucide-style icons.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Regenerate API client/Zod outputs after changing `lib/api-spec/openapi.yaml`.
+- Set `APP_URL` to the published HTTPS URL before using the Telegram bot in production.
 
 ## Pointers
 
