@@ -51,6 +51,17 @@ export const copy = {
     copyError: 'Clipboard access is unavailable.',
     subjectFallback: 'No subject',
     emptyText: 'No message content.',
+    adLabel: 'Ad',
+    adVisit: 'Learn more',
+    gateTitle: 'A quick channel check',
+    gateDetail: 'Join the channels below to continue using JNT Mail.',
+    joinChannel: 'Join',
+    recheck: 'Check membership',
+    checkingMembership: 'Checking',
+    gateError: 'Open this Mini App from Telegram and try again.',
+    bannedTitle: 'Access restricted',
+    bannedDetail: 'This account can no longer use the service.',
+    gateUnavailable: 'Could not verify your access.'
   },
   tr: {
     brand: 'JNT MAIL',
@@ -96,6 +107,17 @@ export const copy = {
     copyError: 'Pano erişimi kullanılamıyor.',
     subjectFallback: 'Konu yok',
     emptyText: 'Mesaj içeriği yok.',
+    adLabel: 'Reklam',
+    adVisit: 'Daha fazla bilgi',
+    gateTitle: 'Kanal kontrolü',
+    gateDetail: 'JNT Mail’i kullanmaya devam etmek için aşağıdaki kanallara katılın.',
+    joinChannel: 'Katıl',
+    recheck: 'Kontrol et',
+    checkingMembership: 'Kontrol ediliyor',
+    gateError: 'Bu Mini App’i Telegram üzerinden açıp tekrar deneyin.',
+    bannedTitle: 'Erişimin kısıtlandı',
+    bannedDetail: 'Bu hesap artık hizmeti kullanamıyor.',
+    gateUnavailable: 'Erişim durumu doğrulanamadı.'
   },
   ru: {
     brand: 'JNT MAIL',
@@ -141,6 +163,17 @@ export const copy = {
     copyError: 'Нет доступа к буферу обмена.',
     subjectFallback: 'Без темы',
     emptyText: 'Нет содержимого сообщения.',
+    adLabel: 'Реклама',
+    adVisit: 'Подробнее',
+    gateTitle: 'Проверка подписки',
+    gateDetail: 'Чтобы продолжить пользоваться JNT Mail, подпишитесь на каналы ниже.',
+    joinChannel: 'Подписаться',
+    recheck: 'Проверить подписку',
+    checkingMembership: 'Проверяем',
+    gateError: 'Откройте это Mini App в Telegram и попробуйте снова.',
+    bannedTitle: 'Доступ ограничен',
+    bannedDetail: 'Этот аккаунт больше не может пользоваться сервисом.',
+    gateUnavailable: 'Не удалось проверить доступ.'
   },
 } as const;
 

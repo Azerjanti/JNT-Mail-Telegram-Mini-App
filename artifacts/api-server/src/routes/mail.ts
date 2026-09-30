@@ -1,6 +1,6 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { Router, type IRouter, type Request } from "express";
-import { Bot, InlineKeyboard } from "grammy";
+import { createHash, randomBytes } from "node:crypto";
+import { Router, type IRouter, type Response as ExpressResponse } from "express";
+import { InlineKeyboard } from "grammy";
 import {
   CreateMailSessionResponse,
   GetMailInboxResponse,
@@ -12,6 +12,11 @@ import {
   UpdateMailLanguageResponse,
 } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
+import { pool } from "@workspace/db";
+import { upsertTelegramUser } from "../lib/database";
+import { writeAuditLog } from "../lib/admin";
+import { isAdminId, isPreviewUser, safeLanguage, type TelegramUser } from "../lib/telegram-auth";
+import { telegramAppUrl, telegramBot } from "../lib/telegram-bot";
 
 type Language = "tr" | "ru" | "en";
 type Provider = "mail.tm" | "mail.gw";
@@ -44,11 +49,8 @@ type MailSession = {
   messages: MailMessage[];
   notifiedMessageIds: Set<string>;
   createdAt: number;
-};
-
-type TelegramUser = {
-  id: string;
-  language: Language;
+  databaseId: string | null;
+  inboxFetchPromise?: Promise<MailMessage[]>;
 };
 
 type ProviderSession = {
@@ -63,23 +65,18 @@ type ProviderSession = {
 const router: IRouter = Router();
 const sessions = new Map<string, MailSession>();
 const newAddressEvents = new Map<string, number[]>();
-const PREVIEW_USER_ID = "preview-user";
 const SESSION_MS = 10 * 60 * 1000;
 const MAX_REFRESHES = 3;
 const MIN_INBOX_CHECK_MS = 4_000;
-const MAX_INIT_DATA_AGE_SECONDS = 24 * 60 * 60;
 const providers: Array<{ provider: Provider; apiBase: string }> = [
   { provider: "mail.tm", apiBase: "https://api.mail.tm" },
   { provider: "mail.gw", apiBase: "https://api.mail.gw" },
 ];
 
-// Long polling must run in exactly one production process. Keeping it off in
-// the development workflow prevents Telegram's 409 getUpdates conflict when a
-// published deployment is using the same bot token.
-const bot = process.env.BOT_TOKEN && process.env.NODE_ENV === "production"
-  ? new Bot(process.env.BOT_TOKEN)
-  : null;
-const appUrl = process.env.APP_URL ?? "";
+// Long polling is started once, after the persistent tables have been ensured
+// by the server bootstrap. The API client remains available for admin actions.
+const bot = telegramBot;
+const appUrl = telegramAppUrl();
 
 const copy: Record<Language, { welcome: string; button: string; newMail: string }> = {
   tr: {
@@ -99,77 +96,11 @@ const copy: Record<Language, { welcome: string; button: string; newMail: string 
   },
 };
 
-function safeLanguage(value: string | undefined): Language {
-  return value === "tr" || value === "ru" ? value : "en";
+function getTelegramUser(res: ExpressResponse): TelegramUser | null {
+  return (res.locals.telegramUser as TelegramUser | undefined) ?? null;
 }
 
-function headerValue(req: Request): string | null {
-  const value = req.header("authorization");
-  return value?.startsWith("tma ") ? value.slice(4) : null;
-}
-
-function parseTelegramInitData(initData: string): Map<string, string> {
-  return new Map(
-    initData
-      .split("&")
-      .map((part) => part.split("="))
-      .filter(([key, value]) => Boolean(key && value))
-      .map(([key, value]) => [decodeURIComponent(key), decodeURIComponent(value)]),
-  );
-}
-
-function verifyTelegramInitData(initData: string): TelegramUser | null {
-  const botToken = process.env.BOT_TOKEN;
-  if (!botToken || !initData) return null;
-
-  const fields = parseTelegramInitData(initData);
-  const hash = fields.get("hash");
-  const authDate = Number(fields.get("auth_date"));
-  if (!hash || !authDate || Date.now() / 1000 - authDate > MAX_INIT_DATA_AGE_SECONDS) {
-    return null;
-  }
-
-  fields.delete("hash");
-  const checkString = [...fields.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, value]) => `${key}=${value}`)
-    .join("\n");
-  const secretKey = createHmac("sha256", "WebAppData").update(botToken).digest();
-  const expectedHash = createHmac("sha256", secretKey).update(checkString).digest("hex");
-  const received = Buffer.from(hash, "hex");
-  const expected = Buffer.from(expectedHash, "hex");
-  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
-
-  try {
-    const user = JSON.parse(fields.get("user") ?? "{}") as { id?: number; language_code?: string };
-    if (!user.id) return null;
-    return { id: String(user.id), language: safeLanguage(user.language_code) };
-  } catch {
-    return null;
-  }
-}
-
-function getTelegramUser(req: Request): TelegramUser | null {
-  const initData = headerValue(req);
-  const verified = initData ? verifyTelegramInitData(initData) : null;
-  if (verified) return verified;
-
-  if (process.env.NODE_ENV !== "production") {
-    try {
-      const previewData = initData ? parseTelegramInitData(initData) : new Map();
-      const user = JSON.parse(previewData.get("user") ?? "{}") as { id?: number; language_code?: string };
-      return {
-        id: user.id ? String(user.id) : PREVIEW_USER_ID,
-        language: safeLanguage(user.language_code),
-      };
-    } catch {
-      return { id: PREVIEW_USER_ID, language: "en" };
-    }
-  }
-  return null;
-}
-
-function error(res: Parameters<Parameters<IRouter["get"]>[1]>[1], status: number, message: string) {
+function error(res: ExpressResponse, status: number, message: string) {
   res.status(status).json({ error: message });
 }
 
@@ -206,7 +137,7 @@ function toMessage(raw: Record<string, unknown>, isRead = false): MailMessage {
   const subject = typeof raw.subject === "string" && raw.subject.trim() ? raw.subject : "No subject";
   const sender = from.name?.trim() || from.address?.split("@")[0] || "Unknown sender";
   return {
-    id: String(raw.id ?? createHash("sha1").update(`${sender}-${subject}-${raw.createdAt ?? Date.now()}`).digest("hex")),
+    id: String(raw.id ?? createHash("sha1").update(JSON.stringify([from.address, subject, raw.createdAt, raw.intro, text])).digest("hex")),
     sender,
     senderEmail: from.address,
     subject,
@@ -307,45 +238,100 @@ function enforceNewAddressRateLimit(userId: string) {
 
 async function createSessionForUser(user: TelegramUser, previous?: MailSession) {
   if (!enforceNewAddressRateLimit(user.id)) throw new Error("rate_limited");
-  if (previous) await deleteProviderSession(previous);
+  if (previous) {
+    await deleteProviderSession(previous);
+    if (previous.databaseId) {
+      await pool.query("UPDATE mail_sessions SET expires_at = NOW() WHERE id = $1", [previous.databaseId]);
+    }
+    sessions.delete(user.id);
+  }
   const providerSession = await createProviderSession();
+  const createdAt = Date.now();
+  const expiresAt = createdAt + SESSION_MS;
+  let databaseId: string | null = null;
   const session: MailSession = {
     userId: user.id,
     language: user.language,
     ...providerSession,
-    expiresAt: Date.now() + SESSION_MS,
+    expiresAt,
     refreshesUsed: 0,
     lastInboxCheck: 0,
     messages: [],
     notifiedMessageIds: new Set(),
-    createdAt: Date.now(),
+    createdAt,
+    databaseId: null,
   };
+
+  if (!isPreviewUser(user.id)) {
+    try {
+      const result = await pool.query<{ id: string }>(
+        `INSERT INTO mail_sessions (telegram_id, provider, created_at, expires_at, mail_count)
+         VALUES ($1, $2, $3, $4, 0) RETURNING id::text`,
+        [user.id, session.provider, new Date(createdAt), new Date(expiresAt)],
+      );
+      databaseId = result.rows[0]?.id ?? null;
+      if (!databaseId) throw new Error("Mail session statistics row was not created");
+    } catch (caught) {
+      await deleteProviderSession(session);
+      throw caught;
+    }
+  }
+
+  session.databaseId = databaseId;
   sessions.set(user.id, session);
   return session;
 }
 
-async function fetchInbox(session: MailSession, userId: string) {
-  const now = Date.now();
-  if (now - session.lastInboxCheck < MIN_INBOX_CHECK_MS) return session.messages;
-  session.lastInboxCheck = now;
-  const response = await providerFetch(session.apiBase, "/messages?page=1", {
-    headers: { authorization: `Bearer ${session.token}` },
-  });
-  if (!response.ok) throw new Error(`Inbox provider error ${response.status}`);
-  const data = (await response.json()) as { "hydra:member"?: Array<Record<string, unknown>>; member?: Array<Record<string, unknown>> };
-  const incoming = (data["hydra:member"] ?? data.member ?? []).map((item) =>
-    toMessage(item, session.messages.some((message) => message.id === String(item.id))),
-  );
-  const previousIds = new Set(session.messages.map((message) => message.id));
-  session.messages = incoming.sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
-  const newMessages = session.messages.filter((message) => !previousIds.has(message.id));
-  for (const message of newMessages) {
-    if (!session.notifiedMessageIds.has(message.id)) {
-      session.notifiedMessageIds.add(message.id);
-      await notifyNewMail(userId, session.language, message);
+async function fetchInbox(session: MailSession, userId: string): Promise<MailMessage[]> {
+  if (session.inboxFetchPromise) return session.inboxFetchPromise;
+  if (Date.now() - session.lastInboxCheck < MIN_INBOX_CHECK_MS) return session.messages;
+
+  const operation = (async () => {
+    session.lastInboxCheck = Date.now();
+    const response = await providerFetch(session.apiBase, "/messages?page=1", {
+      headers: { authorization: `Bearer ${session.token}` },
+    });
+    if (!response.ok) throw new Error(`Inbox provider error ${response.status}`);
+    const data = (await response.json()) as { "hydra:member"?: Array<Record<string, unknown>>; member?: Array<Record<string, unknown>> };
+    const previousById = new Map(session.messages.map((message) => [message.id, message]));
+    const previousIds = new Set(previousById.keys());
+    const incoming = (data["hydra:member"] ?? data.member ?? []).map((item) => {
+      const parsed = toMessage(item);
+      return { ...parsed, isRead: previousById.get(parsed.id)?.isRead ?? false };
+    }).sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
+    const seenInResponse = new Set<string>();
+    const newMessages = incoming.filter((message) => {
+      if (previousIds.has(message.id) || seenInResponse.has(message.id)) return false;
+      seenInResponse.add(message.id);
+      return true;
+    });
+
+    if (newMessages.length > 0 && session.databaseId) {
+      const lastMailAt = new Date(Math.max(...newMessages.map((message) => message.receivedAt.getTime())));
+      await pool.query(
+        `UPDATE mail_sessions SET mail_count = mail_count + $2,
+          last_mail_at = GREATEST(COALESCE(last_mail_at, $3), $3)
+         WHERE id = $1`,
+        [session.databaseId, newMessages.length, lastMailAt],
+      );
     }
+
+    session.messages = incoming;
+    for (const message of newMessages) {
+      if (!session.notifiedMessageIds.has(message.id)) {
+        session.notifiedMessageIds.add(message.id);
+        await notifyNewMail(userId, session.language, message);
+      }
+    }
+    return session.messages;
+  })();
+
+  session.inboxFetchPromise = operation;
+  try {
+    return await operation;
+  } finally {
+    if (session.inboxFetchPromise === operation) session.inboxFetchPromise = undefined;
   }
-  return session.messages;
 }
 
 async function fetchMessageDetail(session: MailSession, messageId: string) {
@@ -360,13 +346,15 @@ async function fetchMessageDetail(session: MailSession, messageId: string) {
 }
 
 async function notifyNewMail(userId: string, language: Language, message: MailMessage) {
-  if (!bot || userId === PREVIEW_USER_ID) return;
+  if (!bot || isPreviewUser(userId)) return;
   try {
-    const keyboard = new InlineKeyboard().webApp(copy[language].button, appUrl);
+    const userState = await pool.query<{ banned: boolean }>("SELECT banned FROM users WHERE telegram_id = $1", [userId]);
+    if (userState.rows[0]?.banned) return;
+    const keyboard = appUrl ? new InlineKeyboard().webApp(copy[language].button, appUrl) : undefined;
     await bot.api.sendMessage(
       userId,
       `${copy[language].newMail}\n${message.sender}\n${message.subject}`,
-      { reply_markup: keyboard },
+      keyboard ? { reply_markup: keyboard } : {},
     );
   } catch (caught) {
     logger.warn({ userId, err: caught }, "Could not send new mail notification");
@@ -374,7 +362,7 @@ async function notifyNewMail(userId: string, language: Language, message: MailMe
 }
 
 router.get("/mail/session", async (req, res) => {
-  const user = getTelegramUser(req);
+  const user = getTelegramUser(res);
   if (!user) return error(res, 401, "Unauthorized");
   try {
     const existing = sessions.get(user.id);
@@ -389,7 +377,7 @@ router.get("/mail/session", async (req, res) => {
 });
 
 router.post("/mail/session", async (req, res) => {
-  const user = getTelegramUser(req);
+  const user = getTelegramUser(res);
   if (!user) return error(res, 401, "Unauthorized");
   try {
     const session = await createSessionForUser(user, sessions.get(user.id));
@@ -402,18 +390,21 @@ router.post("/mail/session", async (req, res) => {
 });
 
 router.post("/mail/session/refresh", async (req, res) => {
-  const user = getTelegramUser(req);
+  const user = getTelegramUser(res);
   if (!user) return error(res, 401, "Unauthorized");
   const session = sessions.get(user.id);
   if (!session || session.expiresAt <= Date.now()) return error(res, 404, "Session expired");
   if (session.refreshesUsed >= MAX_REFRESHES) return error(res, 409, "Refresh limit reached");
   session.refreshesUsed += 1;
   session.expiresAt = Date.now() + SESSION_MS;
+  if (session.databaseId) {
+    await pool.query("UPDATE mail_sessions SET expires_at = $2 WHERE id = $1", [session.databaseId, new Date(session.expiresAt)]);
+  }
   return res.json(RefreshMailSessionResponse.parse(publicSession(session)));
 });
 
 router.post("/mail/session/language", async (req, res) => {
-  const user = getTelegramUser(req);
+  const user = getTelegramUser(res);
   if (!user) return error(res, 401, "Unauthorized");
   const parsed = UpdateMailLanguageBody.safeParse(req.body);
   if (!parsed.success) return error(res, 400, "Invalid language");
@@ -424,7 +415,7 @@ router.post("/mail/session/language", async (req, res) => {
 });
 
 router.get("/mail/inbox", async (req, res) => {
-  const user = getTelegramUser(req);
+  const user = getTelegramUser(res);
   if (!user) return error(res, 401, "Unauthorized");
   const session = sessions.get(user.id);
   if (!session || session.expiresAt <= Date.now()) return error(res, 404, "Session expired");
@@ -439,7 +430,7 @@ router.get("/mail/inbox", async (req, res) => {
 });
 
 router.get("/mail/messages/:messageId", async (req, res) => {
-  const user = getTelegramUser(req);
+  const user = getTelegramUser(res);
   if (!user) return error(res, 401, "Unauthorized");
   const params = GetMailMessageParams.safeParse(req.params);
   if (!params.success) return error(res, 400, "Invalid message id");
@@ -466,22 +457,71 @@ setInterval(() => {
 }, 30_000).unref();
 
 if (bot) {
+  bot.use(async (ctx, next) => {
+    const isMembershipUpdate = Object.prototype.hasOwnProperty.call(ctx.update, "my_chat_member");
+    if (!isMembershipUpdate && ctx.chat?.type === "private" && ctx.from) {
+      try {
+        const state = await pool.query<{ banned: boolean }>(
+          "SELECT banned FROM users WHERE telegram_id = $1",
+          [String(ctx.from.id)],
+        );
+        if (state.rows[0]?.banned) return;
+      } catch (caught) {
+        logger.error({ telegramId: ctx.from.id, err: caught }, "Could not verify bot user ban state");
+        return;
+      }
+    }
+    await next();
+  });
+
   bot.command("start", async (ctx) => {
-    const language = safeLanguage(ctx.from?.language_code);
-    await ctx.reply(copy[language].welcome, {
-      ...(appUrl ? { reply_markup: new InlineKeyboard().webApp(copy[language].button, appUrl) } : {}),
+    if (!ctx.from || ctx.chat.type !== "private") return;
+    const user: TelegramUser = {
+      id: String(ctx.from.id),
+      language: safeLanguage(ctx.from.language_code),
+      ...(ctx.from.username ? { username: ctx.from.username } : {}),
+      ...(ctx.from.first_name ? { firstName: ctx.from.first_name } : {}),
+    };
+    try {
+      await upsertTelegramUser(user);
+    } catch (caught) {
+      logger.error({ telegramId: user.id, err: caught }, "Could not register /start user");
+      return;
+    }
+    await ctx.reply(copy[user.language].welcome, {
+      ...(appUrl ? { reply_markup: new InlineKeyboard().webApp(copy[user.language].button, appUrl) } : {}),
     });
   });
-  if (appUrl) {
-    void bot.api.setChatMenuButton({ menu_button: { type: "web_app", text: "JNT Mail", web_app: { url: appUrl } } }).catch((caught) => {
-      logger.warn({ err: caught }, "Could not set Telegram menu button");
+
+  bot.command("admin", async (ctx) => {
+    const telegramId = ctx.from?.id;
+    if (!telegramId || !isAdminId(String(telegramId)) || !appUrl || ctx.chat.type !== "private") return;
+    await writeAuditLog(String(telegramId), "bot.admin.open", {}).catch((caught) => {
+      logger.warn({ telegramId, err: caught }, "Could not record admin bot command");
     });
-  } else {
-    logger.warn("APP_URL is missing; Telegram web app buttons were not configured");
-  }
-  bot.catch((caught) => logger.warn({ err: caught }, "Telegram bot error"));
-  void bot.start({ drop_pending_updates: true }).catch((caught) => {
-    logger.error({ err: caught }, "Telegram long polling stopped");
+    await ctx.reply("Yönetim paneli", {
+      reply_markup: new InlineKeyboard().webApp("Paneli aç", `${appUrl}/admin`),
+    });
+  });
+
+  bot.on("my_chat_member", async (ctx) => {
+    if (ctx.chat.type !== "private" || !ctx.from) return;
+    const telegramId = String(ctx.chat.id);
+    const user: TelegramUser = {
+      id: telegramId,
+      language: safeLanguage(ctx.from.language_code),
+      ...(ctx.from.username ? { username: ctx.from.username } : {}),
+      ...(ctx.from.first_name ? { firstName: ctx.from.first_name } : {}),
+    };
+    const status = ctx.myChatMember.new_chat_member.status;
+    try {
+      await upsertTelegramUser(user);
+      if (status === "kicked" || status === "member") {
+        await pool.query("UPDATE users SET bot_blocked = $2 WHERE telegram_id = $1", [telegramId, status === "kicked"]);
+      }
+    } catch (caught) {
+      logger.error({ telegramId, err: caught }, "Could not persist Telegram bot membership update");
+    }
   });
 }
 
