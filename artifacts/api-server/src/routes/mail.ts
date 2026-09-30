@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Router, type IRouter, type Request } from "express";
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, webhookCallback } from "grammy";
 import {
   CreateMailSessionResponse,
   GetMailInboxResponse,
@@ -80,6 +80,10 @@ const bot = process.env.BOT_TOKEN && process.env.NODE_ENV === "production"
   ? new Bot(process.env.BOT_TOKEN)
   : null;
 const appUrl = process.env.APP_URL ?? "";
+const webhookUrl = appUrl ? `${appUrl.replace(/\/+$/, "")}/api/telegram/webhook` : "";
+const webhookSecret = process.env.SESSION_SECRET
+  ? createHash("sha256").update(process.env.SESSION_SECRET).digest("hex")
+  : undefined;
 
 const copy: Record<Language, { welcome: string; button: string; newMail: string }> = {
   tr: {
@@ -476,13 +480,25 @@ if (bot) {
     void bot.api.setChatMenuButton({ menu_button: { type: "web_app", text: "JNT Mail", web_app: { url: appUrl } } }).catch((caught) => {
       logger.warn({ err: caught }, "Could not set Telegram menu button");
     });
+    if (webhookUrl) {
+      void bot.api.setWebhook(webhookUrl, {
+        drop_pending_updates: true,
+        ...(webhookSecret ? { secret_token: webhookSecret } : {}),
+      }).then(() => {
+        logger.info({ webhookUrl }, "Telegram webhook configured");
+      }).catch((caught) => {
+        logger.error({ err: caught }, "Could not configure Telegram webhook");
+      });
+    }
   } else {
     logger.warn("APP_URL is missing; Telegram web app buttons were not configured");
   }
   bot.catch((caught) => logger.warn({ err: caught }, "Telegram bot error"));
-  void bot.start({ drop_pending_updates: true }).catch((caught) => {
-    logger.error({ err: caught }, "Telegram long polling stopped");
-  });
+  if (webhookSecret) {
+    router.post("/telegram/webhook", webhookCallback(bot, "express", { secretToken: webhookSecret }));
+  } else {
+    logger.warn("SESSION_SECRET is missing; Telegram webhook route was not registered");
+  }
 }
 
 export default router;
