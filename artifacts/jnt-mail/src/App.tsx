@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUpRight,
   Check,
   ChevronRight,
   Clipboard,
@@ -33,10 +34,11 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { copy, localeLabels, type Copy, type Locale } from '@/lib/locales';
-import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
+import { Route, Switch, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
+const LazyAdminApp = lazy(() => import('@/admin/AdminApp'));
 
 function IconMark() {
   return (
@@ -112,6 +114,7 @@ type TelegramWebApp = {
   setHeaderColor?: (color: string) => void;
   setBackgroundColor?: (color: string) => void;
   openLink?: (url: string) => void;
+  openTelegramLink?: (url: string) => void;
   HapticFeedback?: { impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void; notificationOccurred?: (type: 'error' | 'success' | 'warning') => void };
   BackButton?: { show?: () => void; hide?: () => void; onClick?: (callback: () => void) => void; offClick?: (callback: () => void) => void };
   CloudStorage?: {
@@ -144,6 +147,247 @@ function telegramHaptic(kind: 'success' | 'error' | 'light' = 'light') {
   const haptic = getTelegramWebApp()?.HapticFeedback;
   if (kind === 'light') haptic?.impactOccurred?.('light');
   else haptic?.notificationOccurred?.(kind);
+}
+
+type GateChannel = {
+  id: string;
+  chatId: string;
+  username: string | null;
+  title: string;
+  inviteLink: string | null;
+  enabled: boolean;
+  joined: boolean;
+  error: boolean;
+};
+
+type GateStatus = {
+  banned: boolean;
+  subscriptionRequired: boolean;
+  subscribed: boolean;
+  channels: GateChannel[];
+};
+
+type PublicAd = {
+  id: string;
+  title: string;
+  text: string;
+  linkUrl: string;
+  buttonText: string;
+  imageUrl: string | null;
+  logoUrl: string | null;
+};
+
+async function getGateStatus(): Promise<GateStatus> {
+  const response = await fetch('/api/gate/status', {
+    headers: { Authorization: getTelegramAuthorization() },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'gate_unavailable');
+  return payload as GateStatus;
+}
+
+function GateFailure({ c, onRetry }: { c: Copy; onRetry: () => void }) {
+  return (
+    <main className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background px-5">
+      <div className="app-grid pointer-events-none absolute inset-x-0 top-0 h-[520px] opacity-50" />
+      <section className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-6 text-center shadow-2xl animate-slide-up">
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 text-primary"><ShieldCheck className="h-5 w-5" strokeWidth={1.75} /></span>
+        <h1 className="mt-5 font-mono text-base font-medium text-foreground">{c.gateUnavailable}</h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{c.gateError}</p>
+        <Button variant="primary" className="mt-6 w-full" onClick={onRetry}><RefreshCw className="h-4 w-4" />{c.retry}</Button>
+      </section>
+    </main>
+  );
+}
+
+function BanScreen({ c }: { c: Copy }) {
+  return (
+    <main className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background px-5">
+      <div className="app-grid pointer-events-none absolute inset-x-0 top-0 h-[520px] opacity-50" />
+      <section className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-7 text-center shadow-2xl animate-slide-up">
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-destructive/25 bg-destructive/10 text-destructive"><AlertTriangle className="h-5 w-5" strokeWidth={1.75} /></span>
+        <h1 className="mt-5 font-mono text-lg font-medium text-foreground">{c.bannedTitle}</h1>
+      </section>
+    </main>
+  );
+}
+
+function SubscriptionGate({
+  status,
+  c,
+  onRecheck,
+  checking,
+  checkError,
+}: {
+  status: GateStatus;
+  c: Copy;
+  onRecheck: () => void;
+  checking: boolean;
+  checkError: boolean;
+}) {
+  const channels = status.channels.filter((channel) => !channel.joined && !channel.error);
+  function joinChannel(channel: GateChannel) {
+    const url = channel.inviteLink || (channel.username ? `https://t.me/${channel.username.replace(/^@/, '')}` : null);
+    if (!url) return;
+    const telegram = getTelegramWebApp();
+    if (telegram?.openTelegramLink) telegram.openTelegramLink(url);
+    else if (telegram?.openLink) telegram.openLink(url);
+    else window.open(url, '_blank', 'noopener,noreferrer');
+  }
+  return (
+    <main className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background px-4 py-8">
+      <div className="app-grid pointer-events-none absolute inset-x-0 top-0 h-[520px] opacity-50" />
+      <section className="relative w-full max-w-md rounded-2xl border border-border bg-card p-5 shadow-2xl animate-slide-up sm:p-7">
+        <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 text-primary"><ShieldCheck className="h-5 w-5" strokeWidth={1.75} /></span>
+        <h1 className="mt-5 font-mono text-lg font-medium text-foreground">{c.gateTitle}</h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{c.gateDetail}</p>
+        <div className="mt-6 space-y-2">
+          {channels.map((channel) => {
+            const canJoin = Boolean(channel.inviteLink || channel.username);
+            return (
+              <div key={channel.id} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background/60 px-4 py-3">
+                <span className="min-w-0 truncate text-sm font-medium text-foreground">{channel.title}</span>
+                <Button variant="secondary" className="shrink-0 px-3 py-2" onClick={() => joinChannel(channel)} disabled={!canJoin}>
+                  {c.joinChannel}<ArrowUpRight className="h-3.5 w-3.5" strokeWidth={1.75} />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+        {checkError ? <p className="mt-3 text-xs text-destructive" role="alert">{c.gateUnavailable}</p> : null}
+        <Button variant="primary" className="mt-6 min-h-12 w-full" onClick={onRecheck} disabled={checking}>
+          {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" strokeWidth={1.75} />}
+          {checking ? c.checkingMembership : c.recheck}
+        </Button>
+      </section>
+    </main>
+  );
+}
+
+function GateProtectedHome() {
+  const locale = getInitialLocale();
+  const c = copy[locale];
+  const queryClient = useQueryClient();
+  const gateQuery = useQuery({
+    queryKey: ['user-gate-status'],
+    queryFn: getGateStatus,
+    retry: false,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState(false);
+
+  async function recheck() {
+    setChecking(true);
+    setCheckError(false);
+    try {
+      const response = await fetch('/api/gate/recheck', {
+        method: 'POST',
+        headers: { Authorization: getTelegramAuthorization() },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error('gate_recheck_failed');
+      queryClient.setQueryData(['user-gate-status'], payload as GateStatus);
+      telegramHaptic('success');
+    } catch {
+      setCheckError(true);
+      telegramHaptic('error');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (gateQuery.isLoading) {
+    return (
+      <main className="relative flex min-h-[100dvh] items-center justify-center bg-background px-5">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin text-primary" />{c.loading}</div>
+      </main>
+    );
+  }
+  if (gateQuery.isError || !gateQuery.data) return <GateFailure c={c} onRetry={() => void gateQuery.refetch()} />;
+  if (gateQuery.data.banned) return <BanScreen c={c} />;
+  if (gateQuery.data.subscriptionRequired && !gateQuery.data.subscribed) {
+    return <SubscriptionGate status={gateQuery.data} c={c} onRecheck={() => void recheck()} checking={checking} checkError={checkError} />;
+  }
+  return <Home />;
+}
+
+function AdvertisementCard({ locale }: { locale: Locale }) {
+  const adQuery = useQuery({
+    queryKey: ['public-ad'],
+    queryFn: async () => {
+      const response = await fetch('/api/ads/public');
+      if (!response.ok) throw new Error('ad_unavailable');
+      return await response.json() as { ad: PublicAd | null };
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const cardRef = useRef<HTMLButtonElement | null>(null);
+  const ad = adQuery.data?.ad;
+
+  useEffect(() => {
+    if (!ad || !cardRef.current || typeof IntersectionObserver === 'undefined') return;
+    const storageKey = `jnt-mail-ad-viewed-${ad.id}`;
+    try {
+      if (window.sessionStorage.getItem(storageKey)) return;
+    } catch {
+      // If storage is unavailable, this mounted card still records one impression.
+    }
+    let recorded = false;
+    const observer = new IntersectionObserver((entries) => {
+      if (recorded || !entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.5)) return;
+      recorded = true;
+      observer.disconnect();
+      try { window.sessionStorage.setItem(storageKey, '1'); } catch { /* Storage is optional. */ }
+      void fetch(`/api/ads/${ad.id}/view`, {
+        method: 'POST',
+        headers: { Authorization: getTelegramAuthorization() },
+      }).catch(() => undefined);
+    }, { threshold: 0.5 });
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, [ad?.id]);
+
+  function openAd() {
+    if (!ad) return;
+    void fetch(`/api/ads/${ad.id}/click`, {
+      method: 'POST',
+      headers: { Authorization: getTelegramAuthorization() },
+    }).catch(() => undefined);
+    const telegram = getTelegramWebApp();
+    if (telegram?.openLink) telegram.openLink(ad.linkUrl);
+    else window.open(ad.linkUrl, '_blank', 'noopener,noreferrer');
+  }
+
+  if (adQuery.isLoading) {
+    return <div className="mt-5 h-[232px] animate-pulse-soft rounded-2xl border border-border bg-card" aria-hidden="true" />;
+  }
+  if (!ad) return null;
+  return (
+    <button
+      ref={cardRef}
+      type="button"
+      onClick={openAd}
+      className="group mt-5 block min-h-[232px] w-full overflow-hidden rounded-2xl border border-border bg-card text-left transition-all duration-200 hover:border-primary/40 hover:shadow-[0_10px_30px_hsl(211_100%_62%/.08)]"
+      aria-label={`${ad.title} — ${copy[locale].adVisit}`}
+      data-testid="card-advertisement"
+    >
+      <span className="flex items-center gap-3 px-4 pt-4">
+        {ad.logoUrl ? <img src={ad.logoUrl} alt="" className="h-9 w-9 rounded-lg border border-border bg-background object-cover" /> : null}
+        <span className="min-w-0 flex-1">
+          <span className="block font-mono text-[9px] uppercase tracking-[.18em] text-primary">{copy[locale].adLabel}</span>
+          <span className="mt-1 block truncate text-sm font-semibold text-foreground">{ad.title}</span>
+        </span>
+        <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary" strokeWidth={1.75} />
+      </span>
+      <span className="block px-4 pb-3 pt-2 text-xs leading-5 text-muted-foreground">{ad.text}</span>
+      {ad.imageUrl ? <img src={ad.imageUrl} alt="" loading="lazy" className="h-20 w-full object-cover" /> : null}
+      <span className="flex items-center gap-1.5 px-4 py-3 text-xs font-medium text-primary">{ad.buttonText || copy[locale].adVisit}<ArrowUpRight className="h-3.5 w-3.5" strokeWidth={1.75} /></span>
+    </button>
+  );
 }
 
 function AppError({ onRetry, c }: { onRetry: () => void; c: Copy }) {
@@ -606,6 +850,7 @@ function Home() {
         ) : session ? (
           <div className="pt-7 sm:pt-10">
              <AddressHeader session={session} countdown={countdown} c={c} onCopy={copyAddress} onRefresh={() => setRefreshOpen(true)} onNewAddress={createAddress} onLanguage={() => setLanguageOpen(true)} copyState={copied} />
+            <AdvertisementCard locale={locale} />
             {inboxQuery.isError ? <AppError c={c} onRetry={() => void inboxQuery.refetch()} /> : <InboxList messages={messages} locale={locale} c={c} onOpen={setSelectedMessageId} isFetching={inboxQuery.isFetching} />}
             <div className="mt-8 flex items-center justify-between border-t border-border pt-4 text-[10px] text-muted-foreground">
               <span>{unreadCount} {c.unread}</span>
@@ -622,11 +867,20 @@ function Home() {
   );
 }
 
+function AdminRoute() {
+  return (
+    <Suspense fallback={<main className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">JNT Mail yönetim paneli yükleniyor</main>}>
+      <LazyAdminApp />
+    </Suspense>
+  );
+}
+
 function Router() {
   return (
     <ErrorBoundary>
       <Switch>
-        <Route path="/" component={Home} />
+        <Route path="/admin" component={AdminRoute} />
+        <Route path="/" component={GateProtectedHome} />
         <Route component={NotFound} />
       </Switch>
     </ErrorBoundary>
