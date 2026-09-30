@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @plugin "@tailwindcss/typography";
@@ -64,7 +64,7 @@
   --destructive: 0 72% 63%;
   --destructive-foreground: 0 0% 100%;
   --app-font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --app-font-mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --app-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 0.75rem;
   --primary-border: hsl(211 100% 62% / .38);
   --secondary-border: hsl(220 27% 25%);
@@ -132,3 +132,4 @@
 
 .scrollbar-thin::-webkit-scrollbar { width: 5px; height: 5px; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(220 27% 24%); border-radius: 99px; }
+.admin-shell svg { stroke-width: 1.75; }
