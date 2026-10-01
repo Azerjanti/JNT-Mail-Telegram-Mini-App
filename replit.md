@@ -11,8 +11,8 @@ JNT Mail is a Telegram Mini App that creates a private, disposable ten-minute em
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `BOT_TOKEN` — Telegram BotFather token
-- Optional env: `APP_URL` — public HTTPS Mini App URL used by bot buttons/menu; development falls back to the Replit domain
-- No database is used. Mail accounts and sessions are in memory and reset when the server restarts.
+- Production env: `APP_URL` — public HTTPS Mini App URL used by Telegram buttons and webhook
+- `DATABASE_URL` is supplied by Replit's managed PostgreSQL environment; do not hardcode or expose it
 
 ## Stack
 
@@ -38,6 +38,9 @@ JNT Mail is a Telegram Mini App that creates a private, disposable ten-minute em
 - Development previews accept a stable preview user when Telegram initData is unavailable; production requires a valid Telegram HMAC signature.
 - Expired provider accounts are deleted both on session replacement and via the 30-second cleanup loop.
 - The frontend polls inboxes every five seconds, while the backend suppresses provider calls more frequently than its safety window.
+- Production Telegram updates use a secret-validated webhook; never start long polling alongside it.
+- PostgreSQL tables are declared in `lib/db/src/schema` and applied to production by Replit's Publish schema flow, not by startup SQL.
+- Active mail-provider tokens and message contents remain in process memory; API restarts invalidate unexpired inboxes.
 
 ## Product
 
@@ -52,6 +55,7 @@ Users receive a new disposable address automatically, can copy or replace it, re
 
 - Regenerate API client/Zod outputs after changing `lib/api-spec/openapi.yaml`.
 - Set `APP_URL` to the published HTTPS URL before using the Telegram bot in production.
+- For a continuously running instance, select Reserved VM rather than Autoscale. The uptime check endpoint is `/api/healthz`.
 
 ## Pointers
 

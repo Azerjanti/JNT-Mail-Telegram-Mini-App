@@ -1,7 +1,6 @@
 import app from "./app";
-import { ensureTables } from "./lib/database";
 import { logger } from "./lib/logger";
-import { startTelegramPolling } from "./lib/telegram-bot";
+import { startTelegramWebhook } from "./lib/telegram-bot";
 import { resumePendingAnnouncements } from "./routes/admin";
 
 const rawPort = process.env["PORT"];
@@ -17,18 +16,19 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 async function startServer(): Promise<void> {
-  await ensureTables();
-  await resumePendingAnnouncements();
-
   const server = app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "Server listening");
+    void resumePendingAnnouncements().catch((err: unknown) => {
+      logger.error({ err }, "Could not resume pending announcements");
+    });
+    void startTelegramWebhook().catch((err: unknown) => {
+      logger.error({ err }, "Could not initialize Telegram webhook");
+    });
   });
   server.on("error", (err) => {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   });
-
-  startTelegramPolling();
 }
 
 void startServer().catch((err: unknown) => {

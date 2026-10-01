@@ -1,0 +1,1 @@
+- [PNPM workspace dependency repair](pnpm-workspace-dependency-repair.md) — use a filtered install to restore locked package links without adding deps at the monorepo root.

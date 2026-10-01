@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Router, type IRouter, type Response as ExpressResponse } from "express";
-import { InlineKeyboard } from "grammy";
+import { InlineKeyboard, webhookCallback } from "grammy";
 import {
   CreateMailSessionResponse,
   GetMailInboxResponse,
@@ -16,7 +16,7 @@ import { pool } from "@workspace/db";
 import { upsertTelegramUser } from "../lib/database";
 import { writeAuditLog } from "../lib/admin";
 import { isAdminId, isPreviewUser, safeLanguage, type TelegramUser } from "../lib/telegram-auth";
-import { telegramAppUrl, telegramBot } from "../lib/telegram-bot";
+import { telegramAppUrl, telegramBot, telegramWebhookSecret } from "../lib/telegram-bot";
 
 type Language = "tr" | "ru" | "en";
 type Provider = "mail.tm" | "mail.gw";
@@ -523,6 +523,13 @@ if (bot) {
       logger.error({ telegramId, err: caught }, "Could not persist Telegram bot membership update");
     }
   });
+
+  if (process.env.NODE_ENV === "production" && telegramWebhookSecret) {
+    router.post(
+      "/telegram/webhook",
+      webhookCallback(bot, "express", { secretToken: telegramWebhookSecret }),
+    );
+  }
 }
 
 export default router;
