@@ -168,7 +168,7 @@ class GuerrillaProvider implements MailProvider {
   async createInbox() {
     const data = await this.call("get_email_address");
     if (!data.email_addr || !data.sid_token) throw new Error("Incomplete response");
-    return { provider: this.name, address: data.email_addr, state: { sidToken: data.sid_token, sequence: String(data.email_timestamp ?? 0) } };
+    return { provider: this.name, address: data.email_addr, state: { sidToken: data.sid_token, sequence: "0" } };
   }
   async listMessages(inbox: ProviderInbox) {
     const data = await this.call("check_email", inbox, { seq: inbox.state.sequence || "0" });
