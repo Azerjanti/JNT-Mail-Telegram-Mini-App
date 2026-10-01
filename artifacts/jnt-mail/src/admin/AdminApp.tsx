@@ -64,6 +64,8 @@ type SummaryResponse = {
   recentUsers: SummaryUser[];
   activeUsers: SummaryUser[];
   mailUsers: SummaryUser[];
+  operations: { mailErrors: Array<{ code: string; count: number }>; providers: Array<{ provider: string; cooldownUntil: string | null; lastError: string | null; active: number }>; distribution: Array<{ provider: string; count: number }> };
+  jai: { enabled: boolean; todayMessages: number; errorCount: number; circuitOpenUntil: string | null; modelUnavailable?: boolean; lastError: { code: string | number; message: string } | null };
 };
 
 type ChannelRecord = {
@@ -393,7 +395,13 @@ function SummaryTab() {
   const resource = useAdminResource<SummaryResponse>('/api/admin/summary', {
     totals: { totalUsers: 0, totalSessions: 0, activeSessions: 0, newUsersToday: 0, bannedUsers: 0 },
     recentUsers: [], activeUsers: [], mailUsers: [],
+    operations: { mailErrors: [], providers: [], distribution: [] },
+    jai: { enabled: false, todayMessages: 0, errorCount: 0, circuitOpenUntil: null, lastError: null },
   });
+  async function toggleJai(enabled: boolean) {
+    await adminFetch('/api/admin/summary/jai', jsonRequest('PUT', { enabled }));
+    resource.setData((current) => ({ ...current, jai: { ...current.jai, enabled } }));
+  }
   if (resource.loading) return <LoadingLine />;
   if (resource.error) return <InlineNotice text={resource.error} error />;
   const { totals } = resource.data;
@@ -455,6 +463,11 @@ function SummaryTab() {
           )}
         </Panel>
       </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel><SectionTitle title="Son 24 saat hata kodları" />{resource.data.operations.mailErrors.length ? <div className="space-y-2">{resource.data.operations.mailErrors.map(item => <div key={item.code} className="flex justify-between rounded-lg bg-[#0E1117] px-3 py-2 text-xs"><span className="font-mono text-[#AAB4C2]">{item.code}</span><span className="text-[#72A1FF]">{item.count}</span></div>)}</div> : <p className="text-xs text-[#818B9B]">Hata kaydı yok.</p>}</Panel>
+        <Panel><SectionTitle title="Mail sağlayıcıları" /> <div className="space-y-2">{resource.data.operations.providers.map(item => <div key={item.provider} className="rounded-lg bg-[#0E1117] px-3 py-2 text-xs"><div className="flex justify-between"><span className="font-mono text-[#DCE2EB]">{item.provider} ({resource.data.operations.distribution.find(entry => entry.provider === item.provider)?.count ?? 0})</span><span className={item.cooldownUntil ? 'text-amber-300' : 'text-emerald-300'}>{item.cooldownUntil ? 'Soğumada' : 'Hazır'}</span></div>{item.lastError ? <p className="mt-1 truncate text-[10px] text-[#7E899A]">{item.lastError}</p> : null}</div>)}</div></Panel>
+      </div>
+      <Panel><SectionTitle title="JAI durumu" detail="Yalnızca kullanım ve hata sayaçları gösterilir; sohbet içeriği tutulmaz." /><Toggle label="JAI açık" checked={resource.data.jai.enabled} onChange={(value) => void toggleJai(value)} /><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div className="rounded-lg bg-[#0E1117] p-3">Bugün: {resource.data.jai.todayMessages}</div><div className="rounded-lg bg-[#0E1117] p-3">Hata: {resource.data.jai.errorCount}</div></div>{resource.data.jai.modelUnavailable ? <p className="mt-3 text-xs text-red-300">JAI modeli kullanılamıyor</p> : null}{resource.data.jai.circuitOpenUntil ? <p className="mt-3 text-xs text-amber-300">Devre kesici: {formatDate(resource.data.jai.circuitOpenUntil)}</p> : null}{resource.data.jai.lastError ? <p className="mt-2 text-[10px] text-red-300">Son hata {resource.data.jai.lastError.code}: {resource.data.jai.lastError.message}</p> : null}</Panel>
       <div className="flex justify-end"><ActionButton variant="ghost" onClick={resource.reload}><RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75} />Yenile</ActionButton></div>
     </div>
   );

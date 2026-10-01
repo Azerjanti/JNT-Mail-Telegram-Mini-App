@@ -1,13 +1,15 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { getAdminUser, writeAuditLog } from "../lib/admin";
+import { operationsSummary } from "../lib/operations-status";
+import { jaiSummary, setJaiAdminEnabled } from "./jai";
 
 const router: IRouter = Router();
 
 router.get("/summary", async (_req, res) => {
   const admin = getAdminUser(res);
   try {
-    const [totals, recentUsers, activeUsers, mailUsers] = await Promise.all([
+    const [totals, recentUsers, activeUsers, mailUsers, providerDistribution] = await Promise.all([
       pool.query<{
         total_users: string;
         total_sessions: string;
@@ -69,6 +71,10 @@ router.get("/summary", async (_req, res) => {
         GROUP BY u.telegram_id, u.username, u.first_name, u.language
         ORDER BY MAX(ms.last_mail_at) DESC LIMIT 10
       `),
+      pool.query<{ provider: string; count: string }>(`
+        SELECT provider, COUNT(*)::text AS count
+        FROM mail_sessions GROUP BY provider ORDER BY COUNT(*) DESC
+      `),
     ]);
 
     const totalsRow = totals.rows[0] ?? {
@@ -117,9 +123,31 @@ router.get("/summary", async (_req, res) => {
       recentUsers: recent,
       activeUsers: active,
       mailUsers: mail,
+      operations: {
+        ...operationsSummary(),
+        distribution: providerDistribution.rows.map((item) => ({ provider: item.provider, count: Number(item.count) })),
+      },
+      jai: jaiSummary(),
     });
   } catch (caught) {
     res.status(500).json({ error: "summary_failed" });
+  }
+});
+
+router.put("/summary/jai", async (req, res) => {
+  const admin = getAdminUser(res);
+  if (typeof req.body?.enabled !== "boolean") return res.status(400).json({ error: "invalid_enabled" });
+  try {
+    await pool.query(
+      `INSERT INTO settings (key,value) VALUES ('jai_enabled',$1)
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
+      [String(req.body.enabled)],
+    );
+    setJaiAdminEnabled(req.body.enabled);
+    await writeAuditLog(admin.id, "admin.jai.toggle", { enabled: req.body.enabled });
+    return res.json({ enabled: req.body.enabled });
+  } catch {
+    return res.status(500).json({ error: "jai_toggle_failed" });
   }
 });
 
