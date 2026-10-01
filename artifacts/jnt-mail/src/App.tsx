@@ -34,7 +34,8 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { copy, localeLabels, type Copy, type Locale } from '@/lib/locales';
-import { Route, Switch, Router as WouterRouter } from 'wouter';
+import { getTelegramWebApp, prepareTelegramWebApp, type TelegramWebApp } from '@/lib/telegram';
+import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
@@ -104,29 +105,6 @@ function formatReceived(date: string, locale: Locale, c: Copy) {
   return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(parsed);
 }
 
-type TelegramWebApp = {
-  version?: string;
-  isVersionAtLeast?: (version: string) => boolean;
-  initData?: string;
-  initDataUnsafe?: { user?: { language_code?: string } };
-  ready?: () => void;
-  expand?: () => void;
-  setHeaderColor?: (color: string) => void;
-  setBackgroundColor?: (color: string) => void;
-  openLink?: (url: string) => void;
-  openTelegramLink?: (url: string) => void;
-  HapticFeedback?: { impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void; notificationOccurred?: (type: 'error' | 'success' | 'warning') => void };
-  BackButton?: { show?: () => void; hide?: () => void; onClick?: (callback: () => void) => void; offClick?: (callback: () => void) => void };
-  CloudStorage?: {
-    getItem?: (key: string, callback?: (error: Error | null, value: string) => void) => void;
-    setItem?: (key: string, value: string, callback?: (error: Error | null, stored: boolean) => void) => void;
-  };
-};
-
-function getTelegramWebApp(): TelegramWebApp | undefined {
-  return (window as Window & { Telegram?: { WebApp?: TelegramWebApp } }).Telegram?.WebApp;
-}
-
 function getTelegramAuthorization() {
   const initData = getTelegramWebApp()?.initData;
   return `tma ${initData || 'preview'}`;
@@ -162,6 +140,7 @@ type GateChannel = {
 
 type GateStatus = {
   banned: boolean;
+  isAdmin?: boolean;
   subscriptionRequired: boolean;
   subscribed: boolean;
   channels: GateChannel[];
@@ -310,7 +289,7 @@ function GateProtectedHome() {
   if (gateQuery.data.subscriptionRequired && !gateQuery.data.subscribed) {
     return <SubscriptionGate status={gateQuery.data} c={c} onRecheck={() => void recheck()} checking={checking} checkError={checkError} />;
   }
-  return <Home />;
+  return <Home isAdmin={gateQuery.data.isAdmin === true} />;
 }
 
 function AdvertisementCard({ locale }: { locale: Locale }) {
@@ -703,8 +682,9 @@ function InboxList({
   );
 }
 
-function Home() {
+function Home({ isAdmin = false }: { isAdmin?: boolean }) {
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
   const requestOptions = { credentials: 'include' as const, headers: { Authorization: getTelegramAuthorization() } };
   const sessionQuery = useGetMailSession({ request: requestOptions });
   const session = sessionQuery.data;
@@ -744,11 +724,7 @@ function Home() {
   }, []);
 
   useEffect(() => {
-    const telegram = getTelegramWebApp();
-    telegram?.ready?.();
-    telegram?.expand?.();
-    telegram?.setHeaderColor?.('#0B0D12');
-    telegram?.setBackgroundColor?.('#0B0D12');
+    prepareTelegramWebApp();
   }, []);
 
   useEffect(() => () => {
@@ -802,6 +778,11 @@ function Home() {
     });
   }
 
+  function openAdminPanel() {
+    telegramHaptic('light');
+    navigate('/admin');
+  }
+
   function selectLanguage(nextLocale: Locale) {
     setLocale(nextLocale);
     window.localStorage.setItem('jnt-mail-language', nextLocale);
@@ -829,7 +810,12 @@ function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/5 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[.1em] text-emerald-300"><span className="live-dot" /> {copy[locale].live}</span>
+            <span className={`${isAdmin ? 'hidden min-[420px]:inline-flex' : 'inline-flex'} items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/5 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[.1em] text-emerald-300`}><span className="live-dot" /> {copy[locale].live}</span>
+            {isAdmin ? (
+              <button type="button" onClick={openAdminPanel} className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[.1em] text-primary transition-colors hover:bg-primary/15" data-testid="button-open-admin">
+                <ShieldCheck className="h-3.5 w-3.5" /> {c.admin}
+              </button>
+            ) : null}
             <button type="button" onClick={() => setLanguageOpen(true)} className="flex items-center gap-2 rounded-lg border border-border bg-secondary/50 px-3 py-2 font-mono text-[10px] uppercase tracking-[.1em] text-muted-foreground transition-colors hover:text-foreground" data-testid="button-header-language">
               <Globe2 className="h-3.5 w-3.5" /> {locale.toUpperCase()}
             </button>

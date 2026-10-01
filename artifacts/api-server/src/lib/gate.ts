@@ -15,6 +15,7 @@ export type GateChannel = {
 
 export type GateStatus = {
   banned: boolean;
+  isAdmin: boolean;
   subscriptionRequired: boolean;
   subscribed: boolean;
   channels: GateChannel[];
@@ -69,6 +70,7 @@ export async function getGateStatus(userId: string, forceRefresh = false): Promi
   if (!subscriptionRequired || isAdmin || channels.length === 0) {
     return {
       banned,
+      isAdmin,
       subscriptionRequired,
       subscribed: true,
       channels: channels.map((channel) => ({
@@ -122,6 +124,7 @@ export async function getGateStatus(userId: string, forceRefresh = false): Promi
   });
   return {
     banned,
+    isAdmin,
     subscriptionRequired,
     subscribed: gateChannels.every((channel) => channel.joined || channel.error),
     channels: gateChannels,

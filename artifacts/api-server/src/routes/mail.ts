@@ -77,6 +77,14 @@ const providers: Array<{ provider: Provider; apiBase: string }> = [
 // by the server bootstrap. The API client remains available for admin actions.
 const bot = telegramBot;
 const appUrl = telegramAppUrl();
+const adminPanelUrl = appUrl ? `${appUrl}/admin` : "";
+
+// The admin panel is Turkish-only, so its bot copy is not localized.
+const adminCopy = {
+  title: "Yönetim paneli",
+  open: "Paneli aç",
+  missingAppUrl: "Yönetim paneli açılamadı: APP_URL ayarlı değil.",
+};
 
 const copy: Record<Language, { welcome: string; button: string; newMail: string }> = {
   tr: {
@@ -488,19 +496,25 @@ if (bot) {
       logger.error({ telegramId: user.id, err: caught }, "Could not register /start user");
       return;
     }
-    await ctx.reply(copy[user.language].welcome, {
-      ...(appUrl ? { reply_markup: new InlineKeyboard().webApp(copy[user.language].button, appUrl) } : {}),
-    });
+    const keyboard = appUrl ? new InlineKeyboard().webApp(copy[user.language].button, appUrl) : undefined;
+    // Admins get a second button that opens the admin panel inside Telegram.
+    if (keyboard && isAdminId(user.id)) keyboard.row().webApp(adminCopy.title, adminPanelUrl);
+    await ctx.reply(copy[user.language].welcome, keyboard ? { reply_markup: keyboard } : {});
   });
 
   bot.command("admin", async (ctx) => {
     const telegramId = ctx.from?.id;
-    if (!telegramId || !isAdminId(String(telegramId)) || !appUrl || ctx.chat.type !== "private") return;
+    // Stay silent for everyone else so the command cannot be discovered.
+    if (!telegramId || ctx.chat.type !== "private" || !isAdminId(String(telegramId))) return;
+    if (!appUrl) {
+      await ctx.reply(adminCopy.missingAppUrl);
+      return;
+    }
     await writeAuditLog(String(telegramId), "bot.admin.open", {}).catch((caught) => {
       logger.warn({ telegramId, err: caught }, "Could not record admin bot command");
     });
-    await ctx.reply("Yönetim paneli", {
-      reply_markup: new InlineKeyboard().webApp("Paneli aç", `${appUrl}/admin`),
+    await ctx.reply(adminCopy.title, {
+      reply_markup: new InlineKeyboard().webApp(adminCopy.open, adminPanelUrl),
     });
   });
 

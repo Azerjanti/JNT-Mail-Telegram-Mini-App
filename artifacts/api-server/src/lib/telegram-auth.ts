@@ -131,13 +131,34 @@ export function isPreviewUser(userId: string): boolean {
   return userId === PREVIEW_USER_ID;
 }
 
+// Telegram accounts that always have admin access, even when the ADMIN_IDS
+// environment variable is missing, malformed, or was added after the last
+// publish. A Telegram ID is not a secret: it only grants access together with
+// a signed initData payload that has been verified with BOT_TOKEN.
+const BUILT_IN_ADMIN_IDS: readonly string[] = ["8377297659"];
+
+/**
+ * Parses an ADMIN_IDS style list. Commas, semicolons, spaces and new lines all
+ * work as separators and quotes/brackets around a value are ignored, so
+ * `8377297659`, `"8377297659"`, `[8377297659, 123]`, `8377297659 123` and a
+ * pasted `ADMIN_IDS=8377297659` are all understood. Anything that is not a
+ * positive integer is dropped.
+ */
+export function parseAdminIds(raw: string | undefined): string[] {
+  const ids: string[] = [];
+  for (const token of (raw ?? "").split(/[\s,;]+/)) {
+    const value = token
+      .replace(/^[A-Za-z_][A-Za-z0-9_]*=/, "")
+      .replace(/^["'`\[\]{}()]+|["'`\[\]{}()]+$/g, "");
+    if (!/^\d{1,20}$/.test(value)) continue;
+    const normalized = BigInt(value).toString();
+    if (normalized !== "0") ids.push(normalized);
+  }
+  return ids;
+}
+
 export function getAdminIds(): Set<string> {
-  return new Set(
-    (process.env.ADMIN_IDS ?? "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter((value) => /^\d{1,20}$/.test(value)),
-  );
+  return new Set([...BUILT_IN_ADMIN_IDS, ...parseAdminIds(process.env.ADMIN_IDS)]);
 }
 
 export function isAdminId(userId: string): boolean {
