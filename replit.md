@@ -13,6 +13,8 @@ JNT Mail is a Telegram Mini App that creates a private, disposable ten-minute em
 - Required env: `BOT_TOKEN` — Telegram BotFather token
 - Production env: `APP_URL` — public HTTPS Mini App URL used by Telegram buttons, the menu button and the webhook; it must be the published `.replit.app` address, never the workspace `*.replit.dev` address
 - Optional env: `SESSION_SECRET` — secret behind the Telegram webhook token (derived from `BOT_TOKEN` when it is missing); `ADMIN_IDS` — extra admin Telegram IDs separated by commas, spaces or new lines
+- JAI env: `PROXYAPI_KEY` — server-only ProxyAPI key; `JAI_MODEL` — full model identifier (defaults to `mistralai/mistral-nemo`). The key's permitted-model list must include this identifier. `JAI_DAILY_PER_USER` defaults to 15, `JAI_DAILY_CAP` to 3000, and `JAI_MAX_TOKENS` to 500.
+- `pnpm run test:jai` — PostgreSQL-backed conversation/API regression tests plus simulated-clock tests for the actual JAI panel. No real database, Telegram token, or ProxyAPI key is needed.
 - `DATABASE_URL` is supplied by Replit's managed PostgreSQL environment; do not hardcode or expose it
 
 ## Stack
@@ -45,8 +47,11 @@ JNT Mail is a Telegram Mini App that creates a private, disposable ten-minute em
 - Production Telegram updates use a secret-validated webhook; never start long polling alongside it.
 - Admin access is decided on the server from a verified Telegram initData signature. Telegram ID `8377297659` is built in (`BUILT_IN_ADMIN_IDS`) and `ADMIN_IDS` adds more; an ID alone never grants access without a valid signature.
 - The admin panel only works inside Telegram. Admins reach it from the Admin button in the Mini App header (`isAdmin` comes from `/api/gate/status`), the second button under `/start`, or the `/admin` bot command, all of which open it as a Mini App; Telegram's native back button returns to the mail screen.
-- PostgreSQL tables are declared in `lib/db/src/schema` and applied to production by Replit's Publish schema flow, not by startup SQL.
+- PostgreSQL tables are declared in `lib/db/src/schema` and applied to production by Replit's Publish schema flow. The short-lived JAI usage/conversation tables are also ensured idempotently at startup for existing deployments.
 - Active mail-provider tokens and message contents remain in process memory; API restarts invalidate unexpired inboxes.
+- JAI keeps the full ordered user/assistant transcript in the temporary `jai_conversations` table, shared across workers and restarts. No 40-message/12,000-character trimming or automatic summarization is applied; the old `JAI_HISTORY_MESSAGES`/`JAI_HISTORY_CHARS` settings no longer truncate chats.
+- Only a new user message resets JAI's 13-minute inactivity deadline. History reads, panel reopen, interface-language changes, assistant replies, and allowance resets do not. Expired chats are immediately excluded from reads/model context and deleted on access or by the 30-second cleanup job. An explicit New chat also clears the transcript, but never resets the daily allowance.
+- JAI chat content is never shown in the admin panel or written to application/audit logs. Temporary conversation rows are deleted, not archived. A short database-backed request lease prevents two workers from overwriting the same conversation; delayed replies cannot restore a cleared chat.
 
 ## Product
 
