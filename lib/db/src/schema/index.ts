@@ -6,3 +6,4 @@ export * from "./mail-sessions";
 export * from "./settings";
 export * from "./users";
 export * from "./jai-usage";
+export * from "./jai-conversations";

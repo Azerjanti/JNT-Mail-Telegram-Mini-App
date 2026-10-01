@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { ensureJaiConversationTable } from "./jai-conversations";
 
 export async function ensureTables(): Promise<void> {
   await pool.query(`CREATE TABLE IF NOT EXISTS jai_usage (
@@ -6,6 +7,7 @@ export async function ensureTables(): Promise<void> {
     window_start timestamptz NOT NULL,
     used integer NOT NULL DEFAULT 0 CHECK (used >= 0)
   )`);
+  await ensureJaiConversationTable(pool);
   const setting = await pool.query<{ value: string }>("SELECT value FROM settings WHERE key='jai_enabled'");
   if (setting.rows[0]) {
     const { setJaiAdminEnabled } = await import("../routes/jai");
