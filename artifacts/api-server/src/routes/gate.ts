@@ -16,7 +16,8 @@ async function handleGateStatus(req: Request, res: Response, force = false) {
   try {
     if (!isPreviewUser(user.id)) await upsertTelegramUser(user);
     const status = await getGateStatus(user.id, force);
-    res.json(status);
+    const username = (process.env.SUPPORT_USERNAME || "Azerjnt").replace(/^@/, "");
+    res.json({ ...status, supportUrl: `https://t.me/${username}` });
   } catch (caught) {
     logger.error({ userId: user.id, err: caught }, "Could not read gate status");
     res.status(503).json({ error: "service_unavailable" });

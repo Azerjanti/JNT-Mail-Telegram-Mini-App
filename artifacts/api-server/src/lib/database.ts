@@ -1,5 +1,18 @@
 import { pool } from "@workspace/db";
 
+export async function ensureTables(): Promise<void> {
+  await pool.query(`CREATE TABLE IF NOT EXISTS jai_usage (
+    telegram_id bigint PRIMARY KEY,
+    window_start timestamptz NOT NULL,
+    used integer NOT NULL DEFAULT 0 CHECK (used >= 0)
+  )`);
+  const setting = await pool.query<{ value: string }>("SELECT value FROM settings WHERE key='jai_enabled'");
+  if (setting.rows[0]) {
+    const { setJaiAdminEnabled } = await import("../routes/jai");
+    setJaiAdminEnabled(setting.rows[0].value === "true");
+  }
+}
+
 export async function upsertTelegramUser(user: {
   id: string;
   username?: string;

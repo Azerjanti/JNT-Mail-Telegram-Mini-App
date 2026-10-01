@@ -31,6 +31,7 @@ import {
   type MailSession,
 } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
+import { JaiPanel } from '@/components/jai-panel';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { copy, localeLabels, type Copy, type Locale } from '@/lib/locales';
@@ -144,6 +145,7 @@ type GateStatus = {
   subscriptionRequired: boolean;
   subscribed: boolean;
   channels: GateChannel[];
+  supportUrl?: string;
 };
 
 type PublicAd = {
@@ -179,6 +181,15 @@ function GateFailure({ c, onRetry }: { c: Copy; onRetry: () => void }) {
   );
 }
 
+let configuredSupportUrl = 'https://t.me/Azerjnt';
+function openSupport() {
+  const url = configuredSupportUrl;
+  const telegram = getTelegramWebApp();
+  if (telegram?.openTelegramLink) telegram.openTelegramLink(url);
+  else if (telegram?.openLink) telegram.openLink(url);
+  else window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 function BanScreen({ c }: { c: Copy }) {
   return (
     <main className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background px-5">
@@ -186,6 +197,8 @@ function BanScreen({ c }: { c: Copy }) {
       <section className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-7 text-center shadow-2xl animate-slide-up">
         <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-destructive/25 bg-destructive/10 text-destructive"><AlertTriangle className="h-5 w-5" strokeWidth={1.75} /></span>
         <h1 className="mt-5 font-mono text-lg font-medium text-foreground">{c.bannedTitle}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{c.bannedDetail}</p>
+        <Button variant="secondary" className="mt-5 w-full" onClick={openSupport}>{c.supportContact}</Button>
       </section>
     </main>
   );
@@ -285,6 +298,7 @@ function GateProtectedHome() {
     );
   }
   if (gateQuery.isError || !gateQuery.data) return <GateFailure c={c} onRetry={() => void gateQuery.refetch()} />;
+  if (gateQuery.data.supportUrl) configuredSupportUrl = gateQuery.data.supportUrl;
   if (gateQuery.data.banned) return <BanScreen c={c} />;
   if (gateQuery.data.subscriptionRequired && !gateQuery.data.subscribed) {
     return <SubscriptionGate status={gateQuery.data} c={c} onRecheck={() => void recheck()} checking={checking} checkError={checkError} />;
@@ -382,6 +396,25 @@ function AppError({ onRetry, c }: { onRetry: () => void; c: Copy }) {
       </Button>
     </div>
   );
+}
+
+type MailFailure = { code: string; retryAfterSeconds: number };
+function mailFailure(error: unknown): MailFailure {
+  const data = (error as { data?: { code?: unknown; retryAfterSeconds?: unknown } })?.data;
+  return { code: typeof data?.code === 'string' ? data.code : 'UNKNOWN', retryAfterSeconds: Math.max(1, Number(data?.retryAfterSeconds) || 60) };
+}
+function AddressErrorCard({ failure, c, onRetry, pending }: { failure: MailFailure; c: Copy; onRetry: () => void; pending: boolean }) {
+  const [readyAt, setReadyAt] = useState(() => Date.now() + failure.retryAfterSeconds * 1000);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { setReadyAt(Date.now() + failure.retryAfterSeconds * 1000); }, [failure.code, failure.retryAfterSeconds]);
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
+  const wait = Math.max(0, Math.ceil((readyAt - now) / 1000));
+  const message = failure.code === 'PROVIDERS_BUSY' ? c.providersBusy : failure.code === 'USER_RATE_LIMIT' ? c.userRateLimit : c.addressUnavailable;
+  const supportNeeded = ['PROVIDERS_DOWN', 'DB_ERROR', 'UNKNOWN'].includes(failure.code);
+  return <section className="mt-7 rounded-2xl border border-destructive/25 bg-card p-5" data-testid="card-address-error">
+    <div className="flex items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-destructive/10 text-destructive"><AlertTriangle className="h-5 w-5" /></span><div><p className="text-sm leading-6 text-foreground">{message}</p><p className="mt-2 font-mono text-[10px] text-muted-foreground">{c.errorCode}: {failure.code}</p></div></div>
+    <div className="mt-5 flex flex-wrap gap-2"><Button variant="secondary" onClick={onRetry} disabled={wait > 0 || pending}>{pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{c.retry}{wait > 0 ? ` (${wait})` : ''}</Button>{supportNeeded ? <Button variant="ghost" onClick={openSupport}>{c.support}</Button> : null}</div>
+  </section>;
 }
 
 function LoadingView({ c }: { c: Copy }) {
@@ -686,8 +719,9 @@ function Home({ isAdmin = false }: { isAdmin?: boolean }) {
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
   const requestOptions = { credentials: 'include' as const, headers: { Authorization: getTelegramAuthorization() } };
-  const sessionQuery = useGetMailSession({ request: requestOptions });
+  const sessionQuery = useGetMailSession({ query: { queryKey: getGetMailSessionQueryKey(), retry: false, refetchOnWindowFocus: false }, request: requestOptions });
   const session = sessionQuery.data;
+  const [creationFailure, setCreationFailure] = useState<MailFailure | null>(null);
   const [locale, setLocale] = useState<Locale>(() => getInitialLocale());
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [languageOpen, setLanguageOpen] = useState(false);
@@ -700,7 +734,7 @@ function Home({ isAdmin = false }: { isAdmin?: boolean }) {
   const updateLanguage = useUpdateMailLanguage({ request: requestOptions });
   const inboxQuery = useGetMailInbox({
     query: {
-      enabled: Boolean(session),
+      enabled: Boolean(session && new Date(session.expiresAt).getTime() > Date.now()),
       queryKey: getGetMailInboxQueryKey(),
       refetchInterval: 5000,
       refetchOnWindowFocus: true,
@@ -755,13 +789,14 @@ function Home({ isAdmin = false }: { isAdmin?: boolean }) {
 
   function createAddress() {
     telegramHaptic('light');
+    setCreationFailure(null);
     createSession.mutate(undefined, {
       onSuccess: (newSession) => {
         setLocale(newSession.language);
         queryClient.setQueryData(getGetMailSessionQueryKey(), newSession);
         queryClient.setQueryData(getGetMailInboxQueryKey(), { messages: [], unreadCount: 0, checkedAt: new Date().toISOString() });
       },
-      onError: () => showToast(c.sessionError, true),
+      onError: (caught) => setCreationFailure(mailFailure(caught)),
     });
   }
 
@@ -798,6 +833,7 @@ function Home({ isAdmin = false }: { isAdmin?: boolean }) {
   }
 
   const noSession = !session && !sessionQuery.isLoading && !sessionQuery.isError;
+  const activeFailure = creationFailure ?? (sessionQuery.isError ? mailFailure(sessionQuery.error) : null);
   return (
     <div className="relative min-h-[100dvh] overflow-hidden bg-background">
       <div className="app-grid pointer-events-none absolute inset-x-0 top-0 h-[520px] opacity-50" />
@@ -823,7 +859,8 @@ function Home({ isAdmin = false }: { isAdmin?: boolean }) {
         </div>
       </header>
       <main className="relative mx-auto w-full max-w-3xl px-4 pb-16 sm:px-6">
-        {sessionQuery.isLoading ? <LoadingView c={c} /> : sessionQuery.isError ? <AppError c={c} onRetry={() => void sessionQuery.refetch()} /> : noSession ? (
+        <AdvertisementCard locale={locale} />
+        {sessionQuery.isLoading ? <LoadingView c={c} /> : activeFailure && !session ? <AddressErrorCard failure={activeFailure} c={c} pending={sessionQuery.isFetching || createSession.isPending} onRetry={() => { setCreationFailure(null); void sessionQuery.refetch(); }} /> : noSession ? (
           <div className="mx-auto flex min-h-[72vh] max-w-md flex-col items-center justify-center text-center animate-slide-up">
             <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10 text-primary"><ShieldCheck className="h-6 w-6" /></span>
             <h1 className="mt-7 font-mono text-xl font-medium text-foreground">{c.loading}</h1>
@@ -836,15 +873,18 @@ function Home({ isAdmin = false }: { isAdmin?: boolean }) {
         ) : session ? (
           <div className="pt-7 sm:pt-10">
              <AddressHeader session={session} countdown={countdown} c={c} onCopy={copyAddress} onRefresh={() => setRefreshOpen(true)} onNewAddress={createAddress} onLanguage={() => setLanguageOpen(true)} copyState={copied} />
-            <AdvertisementCard locale={locale} />
-            {inboxQuery.isError ? <AppError c={c} onRetry={() => void inboxQuery.refetch()} /> : <InboxList messages={messages} locale={locale} c={c} onOpen={setSelectedMessageId} isFetching={inboxQuery.isFetching} />}
+            {creationFailure ? <AddressErrorCard failure={creationFailure} c={c} pending={createSession.isPending} onRetry={createAddress} /> : null}
+            {inboxQuery.isError ? <p className="mt-7 text-xs text-muted-foreground" role="status">{c.inboxRefreshFailed}</p> : null}
+            <InboxList messages={messages} locale={locale} c={c} onOpen={setSelectedMessageId} isFetching={inboxQuery.isFetching} />
             <div className="mt-8 flex items-center justify-between border-t border-border pt-4 text-[10px] text-muted-foreground">
               <span>{unreadCount} {c.unread}</span>
               <span className="font-mono">{inboxQuery.data?.checkedAt ? `${c.checked} ${formatReceived(inboxQuery.data.checkedAt, locale, c)}` : c.checking}</span>
             </div>
+            <a href="https://mail.tm" onClick={(event) => { event.preventDefault(); const app = getTelegramWebApp(); if (app?.openLink) app.openLink('https://mail.tm'); else window.open('https://mail.tm', '_blank', 'noopener,noreferrer'); }} className="mt-3 inline-block font-mono text-[9px] text-muted-foreground hover:text-primary">Powered by mail.tm</a>
           </div>
         ) : null}
       </main>
+      <JaiPanel locale={locale} c={c} authorization={getTelegramAuthorization()} sessionActive={Boolean(session && !countdown.expired)} secondsLeft={countdown.seconds} refreshesUsed={session?.refreshesUsed ?? 0} lastErrorCode={activeFailure?.code} />
       {selectedMessageId ? <MessageDetail messageId={selectedMessageId} locale={locale} c={c} onBack={() => { setSelectedMessageId(null); void queryClient.invalidateQueries({ queryKey: getGetMailMessageQueryKey(selectedMessageId) }); }} /> : null}
       {languageOpen ? <LanguageSheet locale={locale} onSelect={selectLanguage} onClose={() => setLanguageOpen(false)} pending={updateLanguage.isPending} c={c} /> : null}
       {refreshOpen ? <RefreshDialog onConfirm={refreshAddress} onClose={() => setRefreshOpen(false)} pending={refreshSession.isPending} c={c} /> : null}

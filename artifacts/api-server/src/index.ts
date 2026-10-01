@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { getAdminIds, parseAdminIds } from "./lib/telegram-auth";
 import { startTelegramWebhook } from "./lib/telegram-bot";
 import { resumePendingAnnouncements } from "./routes/admin";
+import { ensureTables } from "./lib/database";
 
 const rawPort = process.env["PORT"];
 
@@ -17,6 +18,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 async function startServer(): Promise<void> {
+  await ensureTables();
   const server = app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "Server listening");
     const adminIdsFromEnv = parseAdminIds(process.env["ADMIN_IDS"]).length;
