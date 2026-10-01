@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type MouseEvent, type ReactNode } from 'react';
 import {
   Activity,
   ArrowUpRight,
@@ -23,6 +23,8 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { Link, useLocation } from 'wouter';
+import { getTelegramInitData, prepareTelegramWebApp, useTelegramBackButton } from '@/lib/telegram';
 
 type AdminTab = 'summary' | 'announcements' | 'channels' | 'bans' | 'ads';
 type ApiErrorPayload = { error?: string; message?: string };
@@ -151,13 +153,12 @@ const tabs: Array<{ id: AdminTab; title: string; Icon: LucideIcon }> = [
 ];
 
 function getAdminAuthorization(): string {
-  const telegram = (window as Window & { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
-  return `tma ${telegram?.initData ?? ''}`;
+  return `tma ${getTelegramInitData()}`;
 }
 
 function errorMessage(error: unknown): string {
   if (error instanceof AdminApiError) {
-    if (error.status === 404 || error.code === 'not_found') return 'Yönetici yetkisi doğrulanamadı. Paneli yetkili Telegram hesabınızla açın.';
+    if (error.status === 404 || error.code === 'not_found') return 'Yönetici yetkisi doğrulanamadı. Paneli Telegram içinde yetkili hesabınızla yeniden açın; panel bir saatten uzun açık kaldıysa da bu hata görülür.';
     return error.message;
   }
   return error instanceof Error ? error.message : 'İşlem tamamlanamadı.';
@@ -1051,7 +1052,22 @@ function AdsTab({ notify }: { notify: (message: string, isError?: boolean) => vo
   );
 }
 
+function OutsideTelegramNotice() {
+  return (
+    <div className="admin-shell flex min-h-[100dvh] items-center justify-center bg-[#0B0D12] px-5 text-[#EEF1F6]">
+      <section className="w-full max-w-sm rounded-2xl border border-[#222833] bg-[#12151C] p-6 text-center shadow-[0_10px_32px_rgba(0,0,0,.16)]">
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-[#3B7BFF]/25 bg-[#3B7BFF]/10 text-[#6D9CFF]"><ShieldCheck className="h-5 w-5" strokeWidth={1.75} /></span>
+        <h1 className="mt-5 font-mono text-base font-semibold text-white">Yönetim paneli Telegram içinde açılır</h1>
+        <p className="mt-2 text-sm leading-6 text-[#9AA5B5]">Güvenlik nedeniyle panel yalnızca Telegram Mini App içinde, yetkili yönetici hesabıyla çalışır. Botta /admin yazın veya Mini App içindeki Yönetim düğmesine dokunun.</p>
+        <Link href="/" className="mt-6 inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[#303847] bg-[#1A1F29] px-3.5 py-2.5 text-xs font-semibold text-[#D5DCE7] transition hover:bg-[#222936]"><ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />Uygulamaya dön</Link>
+      </section>
+    </div>
+  );
+}
+
 function AdminApp() {
+  const [, navigate] = useLocation();
+  const goHome = useCallback(() => navigate('/'), [navigate]);
   const [tab, setTab] = useState<AdminTab>('summary');
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const noticeTimer = useRef<number | null>(null);
@@ -1062,14 +1078,20 @@ function AdminApp() {
   }
 
   useEffect(() => () => { if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current); }, []);
+  // Opened directly from the bot, the panel is the first screen: tell Telegram it is ready and
+  // make it full height, and let the native back button lead to the mail app.
+  useEffect(() => { prepareTelegramWebApp(); }, []);
+  useTelegramBackButton(goHome);
   const activeTab = useMemo(() => tabs.find((item) => item.id === tab) ?? tabs[0]!, [tab]);
+
+  if (!getTelegramInitData()) return <OutsideTelegramNotice />;
 
   return (
     <div className="admin-shell min-h-[100dvh] bg-[#0B0D12] text-[#EEF1F6]">
       <header className="sticky top-0 z-20 border-b border-[#202631] bg-[#0B0D12]/95 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3.5 sm:px-6">
           <div className="flex items-center gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#3B7BFF]/25 bg-[#3B7BFF]/10 text-[#6D9CFF]"><ShieldCheck className="h-4 w-4" strokeWidth={1.75} /></span><div><p className="font-mono text-sm font-semibold tracking-[.12em]">JNT <span className="text-[#3B7BFF]">ADMIN</span></p><p className="text-[9px] uppercase tracking-[.14em] text-[#718095]">Yönetim paneli</p></div></div>
-          <a href="/" className="inline-flex items-center gap-1.5 rounded-lg border border-[#29313D] px-3 py-2 text-[10px] text-[#AAB4C2] hover:bg-[#171C25]"><ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />Uygulamaya dön</a>
+          <Link href="/" className="inline-flex items-center gap-1.5 rounded-lg border border-[#29313D] px-3 py-2 text-[10px] text-[#AAB4C2] hover:bg-[#171C25]"><ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} />Uygulamaya dön</Link>
         </div>
       </header>
 

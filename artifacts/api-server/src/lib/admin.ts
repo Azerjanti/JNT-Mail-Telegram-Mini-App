@@ -2,7 +2,7 @@ import type { RequestHandler, Response } from "express";
 import { pool } from "@workspace/db";
 import { upsertTelegramUser } from "./database";
 import { logger } from "./logger";
-import { getInitDataFromRequest, getAdminIds, verifyTelegramInitData, type TelegramUser } from "./telegram-auth";
+import { getInitDataFromRequest, isAdminId, verifyTelegramInitData, type TelegramUser } from "./telegram-auth";
 
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 120;
@@ -32,7 +32,14 @@ export const adminRateLimit: RequestHandler = (req, res, next) => {
 export const requireAdmin: RequestHandler = async (req, res, next) => {
   const initData = getInitDataFromRequest(req);
   const user = initData ? verifyTelegramInitData(initData, 60 * 60) : null;
-  if (!user || !getAdminIds().has(user.id)) {
+  if (!user || !isAdminId(user.id)) {
+    // Leave a trace in the logs so the owner can see why the panel did not
+    // open, while callers only ever get a plain 404.
+    if (user) {
+      logger.warn({ userId: user.id }, "Admin API rejected: Telegram user is not an admin");
+    } else if (initData) {
+      logger.warn("Admin API rejected: initData could not be verified (BOT_TOKEN missing or wrong, older than one hour, or malformed)");
+    }
     res.status(404).json({ error: "not_found" });
     return;
   }

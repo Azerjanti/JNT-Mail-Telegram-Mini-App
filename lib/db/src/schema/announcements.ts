@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { bigserial, bigint, boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
 export type AnnouncementMedia = Array<{ type: "photo" | "video"; file_id: string }>;
@@ -17,8 +18,8 @@ export const announcements = pgTable("announcements", {
   blocked: integer("blocked").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
-  lastUserId: bigint("last_user_id", { mode: "bigint" }).notNull().default(0n),
-  targetMaxUserId: bigint("target_max_user_id", { mode: "bigint" }).notNull().default(0n),
+  lastUserId: bigint("last_user_id", { mode: "bigint" }).notNull().default(sql`0`),
+  targetMaxUserId: bigint("target_max_user_id", { mode: "bigint" }).notNull().default(sql`0`),
   createdBy: bigint("created_by", { mode: "bigint" }),
 }, (table) => [
   index("announcements_status_idx").on(table.status, table.createdAt.desc()),

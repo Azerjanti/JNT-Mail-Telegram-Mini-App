@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { getAdminIds, parseAdminIds } from "./lib/telegram-auth";
 import { startTelegramWebhook } from "./lib/telegram-bot";
 import { resumePendingAnnouncements } from "./routes/admin";
 
@@ -18,6 +19,11 @@ if (Number.isNaN(port) || port <= 0) {
 async function startServer(): Promise<void> {
   const server = app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "Server listening");
+    const adminIdsFromEnv = parseAdminIds(process.env["ADMIN_IDS"]).length;
+    logger.info({ adminCount: getAdminIds().size, adminIdsFromEnv }, "Admin access configured");
+    if (process.env["ADMIN_IDS"]?.trim() && adminIdsFromEnv === 0) {
+      logger.warn("ADMIN_IDS is set but contains no valid Telegram IDs; only the built-in admin is active");
+    }
     void resumePendingAnnouncements().catch((err: unknown) => {
       logger.error({ err }, "Could not resume pending announcements");
     });

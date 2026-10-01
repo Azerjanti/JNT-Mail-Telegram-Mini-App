@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { getAdminUser, parseTelegramId, writeAuditLog } from "../lib/admin";
+import { isAdminId } from "../lib/telegram-auth";
 
 const router: IRouter = Router();
 
@@ -40,6 +41,11 @@ router.post("/bans", async (req, res) => {
   const reason = req.body?.reason === undefined || req.body?.reason === "" ? null : req.body?.reason;
   if (!telegramId || (reason !== null && (typeof reason !== "string" || reason.length > 300))) {
     res.status(400).json({ error: "ban_input_invalid" });
+    return;
+  }
+  // A banned admin would be locked out of the bot and the Mini App entry points.
+  if (isAdminId(telegramId)) {
+    res.status(400).json({ error: "admin_cannot_be_banned", message: "Yöneticiler banlanamaz." });
     return;
   }
 
